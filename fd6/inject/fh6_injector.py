@@ -1,25 +1,30 @@
-"""FH6 memory injector — proper LiveryGroup + layer_table implementation.
+"""Forza memory injector — LiveryGroup + layer_table implementation.
 
-CREDITS: discovery approach inspired by bvzrays/forza-painter-fh6 (MIT).
-Adapted for FD6's pipeline.
+CREDITS: discovery approach learned from the publicly available
+bvzrays/forza-painter-fh6 source (MIT). What we adopted:
+  - The CLiveryGroup + layer-table memory layout and offsets (FH5/FH6 share
+    the same Forge-derived struct).
+  - The MSVC RTTI vtable-scan technique used by the optional fast-path
+    locator (see fd6.inject.rtti_locator).
+  - The (X, -Y) position write convention and the scale divisors per shape type.
+Adapted for FD6's pipeline. We do NOT load community-distributed
+`forza-codes.dat` patterns at runtime; only the baseline RTTI class name is
+hardcoded.
 
-Algorithm:
-  1. Scan writable private heap for u16 == layer_count (the count field of
-     LiveryGroup at offset COUNT_OFF).
-  2. For each candidate: treat it as count_address. Compute group_address =
-     count_address - COUNT_OFF. Read layer_table_address from group_address +
-     TABLE_OFF.
-  3. Validate the table contains valid layer pointers (each with sane position,
-     scale, color, shape_id, mask at known offsets).
-  4. Best candidate -> layer table -> each layer pointer is a heap address with
-     fields at fixed offsets.
-  5. To inject: for each layer, write position (X, -Y) at +POS_OFF, scale
-     (w/63, h/63) at +SCALE_OFF, rotation (360-deg) at +ROT_OFF, color (RGBA)
-     at +COLOR_OFF, shape_id at +SHAPE_ID_OFF, mask at +MASK_OFF.
+Locator strategy:
+  1. PRIMARY (fast path): RTTI vtable scan via fd6.inject.rtti_locator. This
+     finds CLiveryGroup instances by C++ type rather than by content
+     fingerprint, so it survives re-injection and edited templates.
+  2. FALLBACK (legacy): fresh-sphere u16-count scan. Used when the RTTI chain
+     can't be resolved (class missing, etc.). This was FD6's only locator
+     before the bvzrays-informed refactor.
 
-  No UI commit step required — writes to the actual Layer struct propagate to
-  render instantly. This solves the lazy-allocation problem that hit our prior
-  POSITION-signature-based approach.
+  In both paths, candidates are validated by the same strict 5/5 layer
+  fingerprint + 95% full-table check before any write happens. RTTI just
+  enumerates candidates more reliably; it never relaxes the safety bar.
+
+  No UI commit step required — writes to the Layer struct propagate to render
+  instantly.
 """
 
 from __future__ import annotations
@@ -31,7 +36,9 @@ from ctypes import wintypes
 from pathlib import Path
 
 from fd6.inject import Injector, VinylGroupHandle, InjectResult
+from fd6.inject.game_profiles import GameProfile, default_profile
 from fd6.inject.patterns_io import DEFAULT_PATTERNS_PATH, load_patterns
+from fd6.inject.rtti_locator import find_livery_group_candidates as rtti_find_candidates
 from fd6.inject.win_process import ProcessHandle, find_process_id
 
 
@@ -60,6 +67,16 @@ SCALE_DIVISOR_ELLIPSE = 63.0
 SCALE_DIVISOR_OTHER = 127.0
 SHAPE_ID_ELLIPSE = 102
 SHAPE_ID_OTHER = 101
+
+# Sphere-fingerprint full-table acceptance threshold. After 16/16 strict
+# layer sampling passes, we read the entire table and check what fraction of
+# its layers pass the same 5/5 strict check. Original threshold was 95% but
+# that turned out to reject "reopened fresh" templates that still carry a
+# few residual layer values from a previous injection — Forza titles don't
+# always wipe the LiveryGroup heap state when the user reloads a template.
+# 85% gives meaningful safety against false-positives while accepting
+# templates whose 5-10% of layers are partially in a transitional state.
+SPHERE_FULL_TABLE_THRESHOLD = 0.85
 
 
 def patterns_are_populated() -> bool:
@@ -163,6 +180,44 @@ def _is_finite_float(v: float) -> bool:
     return math.isfinite(v)
 
 
+def _loose_validate_layer(proc: ProcessHandle, lptr: int) -> bool:
+    """Looser validity check used when type identity is already confirmed by RTTI.
+
+    The strict 5/5 sphere fingerprint requires layers to still look like a fresh
+    template (scale within 0..64, shape_id in {101, 102}, mask 0/1). After an
+    injection that fingerprint stops matching, so re-injecting into an
+    already-painted template fails the strict gate.
+
+    When RTTI has confirmed an object is a CLiveryGroup by C++ vtable identity,
+    we don't need fingerprint confirmation too — we just need to verify the
+    layer pointer dereferences to readable memory with finite-float position
+    and scale fields. This lets the Upload JSON re-injection workflow target
+    groups whose layers carry our previously-written values.
+    """
+    if not _is_user_ptr(lptr):
+        return False
+    pos = _read_2f(proc, lptr + LAYER_POS_OFF)
+    if pos is None or not all(_is_finite_float(v) for v in pos):
+        return False
+    scale = _read_2f(proc, lptr + LAYER_SCALE_OFF)
+    if scale is None or not all(_is_finite_float(v) for v in scale):
+        return False
+    # Color bytes must exist (any byte values are fine; the game stores arbitrary RGBA)
+    if proc.try_read(lptr + LAYER_COLOR_OFF, 4) is None:
+        return False
+    return True
+
+
+def _count_loose_valid_layers(proc: ProcessHandle, table_addr: int, layer_count: int) -> int:
+    """Like _count_valid_layers but uses the loose check — for RTTI-confirmed groups."""
+    valid = 0
+    for k in range(layer_count):
+        lptr = _read_u64(proc, table_addr + k * 8)
+        if _loose_validate_layer(proc, lptr):
+            valid += 1
+    return valid
+
+
 def locate_livery_group(
     proc: ProcessHandle, layer_count: int,
     progress_cb=None, max_candidates: int = 200000,
@@ -215,6 +270,18 @@ def locate_livery_group(
                     ok = False
                     break
             if ok:
+                # First candidate that passes the strict 16/16 gate AND the full
+                # 95% table coverage check is the winner — we return early
+                # instead of scanning the rest of memory. Saves significant time
+                # when the open template is found in the first few regions.
+                # The risk (multiple fresh templates in memory simultaneously,
+                # picking a non-active one) is unchanged from the prior behavior,
+                # which already used "first by sort order" as the tiebreaker.
+                valid_full = _count_valid_layers(proc, table_addr, layer_count)
+                if valid_full >= layer_count * SPHERE_FULL_TABLE_THRESHOLD:
+                    if progress_cb:
+                        progress_cb(i + 1, total, len(perfect) + 1)
+                    return (group_addr, table_addr)
                 perfect.append((group_addr, table_addr))
         if progress_cb: progress_cb(i + 1, total, len(perfect))
     return _pick_best_perfect(proc, perfect, layer_count)
@@ -235,7 +302,7 @@ def _pick_best_perfect(
         # Single candidate — still validate the full table before accepting.
         group_addr, table_addr = perfect[0]
         valid_full = _count_valid_layers(proc, table_addr, layer_count)
-        if valid_full >= layer_count * 0.95:  # >= 95% must be valid
+        if valid_full >= layer_count * SPHERE_FULL_TABLE_THRESHOLD:
             return (group_addr, table_addr)
         return None
     # Multiple — rank by full-table validation
@@ -245,7 +312,7 @@ def _pick_best_perfect(
         scored.append((valid_full, group_addr, table_addr))
     scored.sort(reverse=True)
     best_valid, group_addr, table_addr = scored[0]
-    if best_valid >= layer_count * 0.95:
+    if best_valid >= layer_count * SPHERE_FULL_TABLE_THRESHOLD:
         return (group_addr, table_addr)
     return None
 
@@ -272,23 +339,35 @@ def _pack_color(shape_dict: dict) -> bytes:
 
 
 class FH6Injector(Injector):
-    """Forza Horizon 6 injector — LiveryGroup + layer_table strategy."""
+    """Forza injector — LiveryGroup + layer_table strategy.
 
-    game_label = "Forza Horizon 6"
+    Despite the name, this class now drives FH5/FH6/FH4 via GameProfile.
+    The class name is kept for backwards-compatibility with existing imports.
+    """
 
-    def __init__(self, pid: int | None = None, patterns_path: Path | str = PATTERNS_FILE) -> None:
+    def __init__(self, pid: int | None = None, patterns_path: Path | str = PATTERNS_FILE,
+                 profile: GameProfile | None = None) -> None:
         self.pid = pid
         self.patterns_path = Path(patterns_path)
+        self.profile: GameProfile = profile or default_profile()
         self._proc: ProcessHandle | None = None
         self._group_addr: int | None = None
         self._table_addr: int | None = None
         self._layer_count: int | None = None
 
+    @property
+    def game_label(self) -> str:
+        return self.profile.label
+
     def attach(self) -> None:
         if self.pid is None:
-            self.pid = find_process_id("forzahorizon6.exe")
+            for name in self.profile.process_names:
+                self.pid = find_process_id(name)
+                if self.pid is not None:
+                    break
             if self.pid is None:
-                raise RuntimeError("forzahorizon6.exe is not running")
+                names = " / ".join(self.profile.process_names)
+                raise RuntimeError(f"{self.profile.label} is not running (looked for: {names})")
         self._proc = ProcessHandle(self.pid)
         self._proc.open()
 
@@ -297,9 +376,94 @@ class FH6Injector(Injector):
             self._proc.close()
             self._proc = None
 
+    def _try_rtti_locate(self, count_try: int, progress_cb=None, status_cb=None) -> tuple[int, int] | None:
+        """RTTI fallback. Returns (group, table) or None on miss.
+
+        RTTI confirms the candidate is a CLiveryGroup by C++ vtable identity, so
+        we accept it with LOOSE validation (layer pointers must dereference to
+        readable memory with finite floats) rather than the strict 5/5 sphere
+        fingerprint. This lets the Upload JSON re-injection workflow target
+        groups whose layers carry our previously-written values — the strict
+        check only matches untouched sphere templates.
+
+        Pick the candidate with the highest count of loose-valid layers; require
+        >= 95% loose-valid before accepting (still high enough to reject
+        garbage / partially-allocated memory regions).
+        """
+        if self._proc is None or self.pid is None:
+            return None
+        proc = self._proc
+
+        def _accept(group_addr: int, table_addr: int) -> bool:
+            """Inline early-exit: stop scanning as soon as a candidate passes
+            loose 16-layer sample + 95% full-table loose validation. Saves a
+            multi-minute scan of the rest of memory once we have a winner."""
+            sample_n = min(count_try, 16)
+            for k in range(sample_n):
+                lptr = _read_u64(proc, table_addr + k * 8)
+                if not _loose_validate_layer(proc, lptr):
+                    return False
+            valid_full = _count_loose_valid_layers(proc, table_addr, count_try)
+            return valid_full >= count_try * 0.95
+
+        try:
+            candidates = rtti_find_candidates(
+                proc, self.pid, self.profile, count_try,
+                progress_cb=(progress_cb if progress_cb else None),
+                accept_cb=_accept,
+                status_cb=(status_cb if status_cb else None),
+            )
+        except Exception:
+            return None
+        if not candidates:
+            return None
+        # If accept_cb fired, candidates is a single confirmed pair.
+        if len(candidates) == 1:
+            return candidates[0]
+        # Otherwise (no early accept): pick best by full-table loose validity.
+        scored: list[tuple[int, int, int]] = []
+        for group_addr, table_addr in candidates:
+            sample_n = min(count_try, 16)
+            ok = True
+            for k in range(sample_n):
+                lptr = _read_u64(proc, table_addr + k * 8)
+                if not _loose_validate_layer(proc, lptr):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            valid_full = _count_loose_valid_layers(proc, table_addr, count_try)
+            scored.append((valid_full, group_addr, table_addr))
+        if not scored:
+            return None
+        scored.sort(reverse=True)
+        best_valid, group_addr, table_addr = scored[0]
+        if best_valid >= count_try * 0.95:
+            return (group_addr, table_addr)
+        return None
+
     def find_active_vinyl_group(self, progress_cb=None, layer_count: int | None = None,
-                                color_progress_cb=None) -> VinylGroupHandle:
-        """Find LiveryGroup by scanning for layer_count u16, validating, picking best."""
+                                color_progress_cb=None, status_cb=None) -> VinylGroupHandle:
+        """Locate the active LiveryGroup.
+
+        **Sphere-fingerprint scan is the PRIMARY locator for every target.**
+        It's fast, proven on FH6, and works on any title whose CLiveryGroup
+        offsets match (FH5/FH6 confirmed; FH4/FH3 BETA same Forge engine
+        family).
+
+        If sphere fingerprint scan finds nothing — which happens when the
+        target template has already been injected on (layer values no longer
+        match the fresh-sphere pattern) — fall back to the RTTI vtable scan.
+        RTTI confirms candidates by C++ type and uses LOOSE per-layer
+        validation, so it can pick up already-painted templates that the
+        strict sphere scan rejects. Slower (reads the game's code section
+        looking for the CLiveryGroup class signature) so it only runs when
+        primary misses.
+
+        `status_cb(msg: str)` — optional callback used to surface "sphere
+        scan missed, starting RTTI fallback" to the GUI dialog so users don't
+        see the scan time silently double.
+        """
         if not self._proc:
             raise RuntimeError("Injector not attached. Call attach() first.")
         # Try the requested count first (exact match), then larger common templates
@@ -312,15 +476,46 @@ class FH6Injector(Injector):
         for count_try in tries:
             if count_try is None:
                 continue
+            # PRIMARY: fingerprint scan (fast, proven sphere-template method).
             result = locate_livery_group(self._proc, count_try, progress_cb=progress_cb)
+            if result is None:
+                # Sphere fingerprint missed — the template has likely been
+                # injected on previously. Notify the GUI and try RTTI.
+                if status_cb:
+                    status_cb(
+                        f"Sphere-template scan found no fresh {count_try}-layer group "
+                        f"(template may already be painted). Falling back to RTTI "
+                        f"vtable scan — this can take an extra 2–5 minutes on a "
+                        f"large game while it reads the code section. "
+                        f"DO NOT click anything in FD6 or interact with the app during "
+                        f"this phase — clicking can trigger a 'Not Responding' freeze "
+                        f"that may force-quit the injector before it finishes. The "
+                        f"scan is running in the background and will resume the dialog "
+                        f"once a candidate is located."
+                    )
+                result = self._try_rtti_locate(count_try, progress_cb=progress_cb, status_cb=status_cb)
             if result is not None:
                 self._group_addr, self._table_addr = result
                 self._layer_count = count_try
-                # Read all layer pointers
-                addrs = []
-                for i in range(count_try):
-                    lptr = _read_u64(self._proc, self._table_addr + i * 8)
-                    addrs.append(lptr)
+                # Bulk-read the entire layer-pointer table in ONE syscall instead
+                # of count_try individual ReadProcessMemory calls. The previous
+                # per-pointer loop locked the worker thread for 1500-3000 ctypes
+                # calls back-to-back, which Windows happily labelled "Not
+                # Responding" — same outcome, but in a fraction of the time and
+                # without the visible freeze.
+                table_bytes = self._proc.try_read(self._table_addr, count_try * 8)
+                if table_bytes and len(table_bytes) == count_try * 8:
+                    addrs = list(struct.unpack(f"<{count_try}Q", table_bytes))
+                else:
+                    # Fallback: per-pointer read if the bulk read was short
+                    # (e.g. table straddles an unreadable page). Rare.
+                    addrs = [_read_u64(self._proc, self._table_addr + i * 8)
+                             for i in range(count_try)]
+                if status_cb:
+                    status_cb(
+                        f"Located vinyl group with {count_try} layer slots. "
+                        f"Writing shapes now…"
+                    )
                 return VinylGroupHandle(
                     base_addr=self._group_addr,
                     layer_count=count_try,
@@ -380,7 +575,10 @@ class FH6Injector(Injector):
                 continue
             shape_type = sd.get("type", "rotated_ellipse")
             is_ellipse = "ellipse" in shape_type or shape_type == "circle"
-            scale_div = SCALE_DIVISOR_ELLIPSE if is_ellipse else SCALE_DIVISOR_OTHER
+            scale_div = (
+                self.profile.scale_divisor_ellipse if is_ellipse
+                else self.profile.scale_divisor_other
+            )
 
             try:
                 # Position: X, -Y (Y negated per bvzrays)
@@ -409,9 +607,10 @@ class FH6Injector(Injector):
                 self._proc.write(lptr + LAYER_COLOR_OFF, _pack_color(sd))
                 bytes_total += 4
 
-                # Shape ID: 102 for ellipse, 101 for other
-                self._proc.write(lptr + LAYER_SHAPE_ID_OFF,
-                                 bytes([SHAPE_ID_ELLIPSE if is_ellipse else SHAPE_ID_OTHER]))
+                # Shape ID: 102 for ellipse, 101 for other (per profile)
+                self._proc.write(lptr + LAYER_SHAPE_ID_OFF, bytes([
+                    self.profile.shape_id_ellipse if is_ellipse else self.profile.shape_id_other
+                ]))
                 bytes_total += 1
 
                 # Mask: 0

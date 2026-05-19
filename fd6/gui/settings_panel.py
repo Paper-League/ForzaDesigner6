@@ -102,12 +102,31 @@ class SettingsPanel(QWidget):
         btn_row.addWidget(self.stop_btn)
         layout.addLayout(btn_row)
 
-        # Inject button (Phase 2)
-        self.inject_btn = QPushButton("Inject into FH6")
+        # Target game picker — FH6 is the validated default. FH5/FH4 are beta.
+        from fd6.inject.game_profiles import list_profiles
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Target:"))
+        self.target_combo = QComboBox(self)
+        self._target_profiles = list_profiles()
+        for prof in self._target_profiles:
+            self.target_combo.addItem(prof.label, prof.key)
+        self.target_combo.setCurrentIndex(0)  # FH6 by default
+        self.target_combo.setToolTip(
+            "Which Forza title to inject into. FH6 is fully validated. "
+            "FH5 / FH4 use the same memory layout per public research but have "
+            "not been independently verified — test on a throwaway vinyl group first."
+        )
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+        target_row.addWidget(self.target_combo, stretch=1)
+        layout.addLayout(target_row)
+
+        # Inject button — label updates with target selection
+        self.inject_btn = QPushButton("Inject into Forza Horizon 6")
         self.inject_btn.setEnabled(False)
         self.inject_btn.setToolTip(
-            "Phase 2 feature. Requires FH6 memory patterns to be discovered and saved "
-            "to fd6/inject/patterns/fh6_patterns.json. See README §Phase 2."
+            "Push the most-recent generated/loaded shapes JSON into the selected Forza title's "
+            "active vinyl group. Make sure the in-game vinyl editor is open with a fresh "
+            "sphere-template group before clicking."
         )
         self.inject_btn.clicked.connect(self.inject_clicked.emit)
         layout.addWidget(self.inject_btn)
@@ -116,6 +135,31 @@ class SettingsPanel(QWidget):
 
         # Apply initial profile
         self._on_profile_changed(self.profile_combo.currentIndex())
+
+    def selected_target_profile_key(self) -> str:
+        """Return the key ('fh6'/'fh5'/'fh4') of the currently picked injection target."""
+        data = self.target_combo.currentData()
+        return str(data) if data else "fh6"
+
+    def _on_target_changed(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._target_profiles):
+            return
+        prof = self._target_profiles[idx]
+        # Strip the "(BETA)" suffix for the button label so it stays clean.
+        clean_label = prof.label.replace(" (BETA)", "")
+        self.inject_btn.setText(f"Inject into {clean_label}")
+        if prof.beta:
+            tooltip = (
+                f"BETA target: {prof.label}.\n\n{prof.beta_note}\n\n"
+                "Make sure the in-game vinyl editor is open with a fresh sphere-template group."
+            )
+        else:
+            tooltip = (
+                "Push the most-recent generated/loaded shapes JSON into the selected Forza title's "
+                "active vinyl group. Make sure the in-game vinyl editor is open with a fresh "
+                "sphere-template group before clicking."
+            )
+        self.inject_btn.setToolTip(tooltip)
 
     def _populate_profiles(self) -> None:
         self.profile_combo.clear()

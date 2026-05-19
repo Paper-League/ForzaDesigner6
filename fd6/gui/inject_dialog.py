@@ -1,7 +1,7 @@
-"""Modal dialog shown during an active FH6 injection.
+"""Modal dialog shown during an active injection (FH6 / FH5 / FH4 / FH3).
 
 Blocks the rest of the FD6 GUI, can't be closed by the user, and includes a
-prominent professional warning that editing the FH6 vinyl group during the
+prominent professional warning that editing the game's vinyl group during the
 operation will cause the injection to fail.
 
 The dialog auto-closes when the worker emits its terminal status (success/warning/error
@@ -17,6 +17,15 @@ from PySide6.QtWidgets import (
 )
 
 
+def _short_game_label(label: str) -> str:
+    """Compress 'Forza Horizon N' to 'FHN' for tight UI text. Other labels pass through."""
+    if label.startswith("Forza Horizon "):
+        suffix = label[len("Forza Horizon "):].strip()
+        if suffix.isdigit():
+            return f"FH{suffix}"
+    return label
+
+
 SEVERITY_COLORS = {
     "info":    ("#cccccc", "#1f1f1f"),
     "success": ("#2ecc71", "#0c2417"),
@@ -28,9 +37,13 @@ SEVERITY_COLORS = {
 class InjectionDialog(QDialog):
     """Modal injection-in-progress dialog. Caller wires our slots to InjectionWorker signals."""
 
-    def __init__(self, parent=None, json_name: str = "") -> None:
+    def __init__(self, parent=None, json_name: str = "", game_label: str = "Forza Horizon 6") -> None:
         super().__init__(parent)
-        self.setWindowTitle("FD6 → Forza Horizon 6 Injection")
+        # Strip "(BETA)" suffix from the label for cleaner dialog text — beta status
+        # is already surfaced as a yellow warning banner from the worker.
+        self._clean_label = game_label.replace(" (BETA)", "")
+        self._short_label = _short_game_label(self._clean_label)
+        self.setWindowTitle(f"FD6 → {self._clean_label} Injection")
         # Block parent, no close button, no help button
         self.setModal(True)
         flags = self.windowFlags()
@@ -45,7 +58,7 @@ class InjectionDialog(QDialog):
         root.setSpacing(12)
 
         # Header
-        header = QLabel("Injecting shapes into Forza Horizon 6")
+        header = QLabel(f"Injecting shapes into {self._clean_label}")
         hf = QFont(); hf.setBold(True); hf.setPointSize(13)
         header.setFont(hf)
         root.addWidget(header)
@@ -77,12 +90,12 @@ class InjectionDialog(QDialog):
         )
         wl = QVBoxLayout(warn_box)
         wl.setContentsMargins(14, 10, 14, 10)
-        warn_title = QLabel("⚠  Do not modify Forza Horizon 6 during injection")
+        warn_title = QLabel(f"⚠  Do not modify {self._clean_label} during injection")
         wtf = QFont(); wtf.setBold(True); wtf.setPointSize(11)
         warn_title.setFont(wtf)
         wl.addWidget(warn_title)
         warn_body = QLabel(
-            "Editing, adding, deleting, or moving any vinyl shape in FH6 while this "
+            f"Editing, adding, deleting, or moving any vinyl shape in {self._short_label} while this "
             "operation is running will cause the in-game vinyl group's memory to be "
             "reallocated mid-write, which will fail the injection. Please leave the "
             "vinyl editor untouched until this dialog closes.\n\n"
@@ -90,7 +103,7 @@ class InjectionDialog(QDialog):
             "(typically layers 1–10) may contain placeholder geometry left over from "
             "the original template and can occasionally render in front of the "
             "injected artwork. If you notice unexpected shapes obscuring your design, "
-            "open the FH6 layer panel and delete, hide, or reposition the affected "
+            f"open the {self._short_label} layer panel and delete, hide, or reposition the affected "
             "low-index layers as needed."
         )
         warn_body.setWordWrap(True)
@@ -130,7 +143,7 @@ class InjectionDialog(QDialog):
         # Scan phase is treated as 0–50% of overall; write phase is 50–100%
         pct = int(round(50 * scanned / max(1, total)))
         self.progress.setValue(pct)
-        self.stage_label.setText("Stage 1 of 2 — Scanning FH6 memory")
+        self.stage_label.setText(f"Stage 1 of 2 — Scanning {self._short_label} memory")
         self.detail_label.setText(
             f"{scanned}/{total} regions  •  {hits} strict LiveryGroup candidate(s) found"
         )

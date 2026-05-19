@@ -44,6 +44,8 @@ pyinstaller ^
     --hidden-import fd6.inject.patterns_io ^
     --hidden-import fd6.inject.win_process ^
     --hidden-import fd6.inject.fh6_injector ^
+    --hidden-import fd6.inject.game_profiles ^
+    --hidden-import fd6.inject.rtti_locator ^
     --hidden-import fd6.gui.inject_worker ^
     --hidden-import fd6.gui.inject_dialog ^
     --hidden-import fd6.gui.splash ^

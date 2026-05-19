@@ -21,6 +21,12 @@ class FD6Document:
     shape_count: int = 0
     generated_at: str = ""
     profile: str = ""
+    # True when the JSON was generated with sticker mode (transparent backdrop —
+    # "Add white background to transparent images" was UNCHECKED). Default False
+    # for backwards compat with older JSONs that pre-date this field. Affects
+    # how the GUI re-renders the preview on Upload JSON: sticker JSONs get a
+    # transparent preview, non-sticker JSONs get a white canvas as before.
+    sticker_mode: bool = False
     shapes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -45,6 +51,7 @@ class FD6Document:
             shape_count=int(data.get("shape_count", len(data.get("shapes", [])))),
             generated_at=str(data.get("generated_at", "")),
             profile=str(data.get("profile", "")),
+            sticker_mode=bool(data.get("sticker_mode", False)),
             shapes=list(data.get("shapes", [])),
         )
 
@@ -58,6 +65,7 @@ class FD6Document:
         image_size: tuple[int, int],
         shapes: Iterable[Shape],
         profile_name: str = "",
+        sticker_mode: bool = False,
     ) -> "FD6Document":
         shape_list = [s.to_json() for s in shapes]
         return cls(
@@ -68,5 +76,6 @@ class FD6Document:
             shape_count=len(shape_list),
             generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             profile=profile_name,
+            sticker_mode=sticker_mode,
             shapes=shape_list,
         )

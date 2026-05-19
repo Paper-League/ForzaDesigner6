@@ -20,18 +20,25 @@ class InjectionWorker(QObject):
     status = Signal(str, str)               # message, severity ("info"|"success"|"warning"|"error")
     done = Signal()
 
-    def __init__(self, json_path: Path) -> None:
+    def __init__(self, json_path: Path, profile_key: str = "fh6") -> None:
         super().__init__()
         self.json_path = Path(json_path)
+        self.profile_key = profile_key
 
     def run(self) -> None:
         from fd6.inject import FH6Injector, patterns_are_populated
+        from fd6.inject.game_profiles import get_profile, default_profile
         from fd6.io.exporter import load_json
 
         if not patterns_are_populated():
             self.status.emit("Patterns file not populated. Re-derive via discovery workflow.", "error")
             self.done.emit()
             return
+
+        try:
+            profile = get_profile(self.profile_key)
+        except ValueError:
+            profile = default_profile()
 
         try:
             doc = load_json(str(self.json_path))
@@ -44,16 +51,50 @@ class InjectionWorker(QObject):
         n_shapes = len(shapes)
         self.status.emit(f"Loaded {n_shapes} shapes from {self.json_path.name}.", "info")
 
-        inj = FH6Injector()
-        try:
-            self.status.emit("Attaching to FH6...", "info")
-            inj.attach()
+        if profile.beta:
             self.status.emit(
-                f"Attached. Scanning FH6 memory for LiveryGroup with {n_shapes} layers "
-                f"(this can take several minutes the first time)...", "info",
+                f"⚠ BETA target: {profile.label}. {profile.beta_note}",
+                "warning",
             )
+
+        inj = FH6Injector(profile=profile)
+        try:
+            # Upfront expectation-setting so users understand both the workflow
+            # they should follow AND why a re-injection scan may take longer.
+            self.status.emit(
+                "Starting injection. For the fastest scan time, load a fresh, "
+                "unmodified sphere-template vinyl group of the matching layer count "
+                "before injecting. Re-injecting onto an already-painted template "
+                "still works but the locator falls back to a slower memory scan "
+                "(typically an extra 2–5 minutes on a large game).",
+                "info",
+            )
+            self.status.emit(f"Attaching to {profile.label}...", "info")
+            inj.attach()
+            if profile.beta:
+                self.status.emit(
+                    f"Attached. Scanning memory for the {n_shapes}-layer sphere-template "
+                    f"LiveryGroup (BETA fallback to RTTI will only run if sphere scan finds nothing)…",
+                    "info",
+                )
+            else:
+                self.status.emit(
+                    f"Attached. Scanning memory for the {n_shapes}-layer LiveryGroup template…",
+                    "info",
+                )
+            # Kick the dialog out of "Preparing" immediately so user sees activity
+            # even before the worker emits real region progress.
+            self.scan_progress.emit(0, 1, 0)
+            # Callback the injector uses to tell us about phase transitions
+            # (e.g., "sphere scan missed, starting RTTI fallback").
+            def _on_phase_status(msg: str) -> None:
+                self.status.emit(msg, "warning")
             # Pass n_shapes as preferred layer_count so we try the matching template first.
-            handle = inj.find_active_vinyl_group(progress_cb=self._on_scan_progress, layer_count=n_shapes)
+            handle = inj.find_active_vinyl_group(
+                progress_cb=self._on_scan_progress,
+                layer_count=n_shapes,
+                status_cb=_on_phase_status,
+            )
             slots = handle.layer_count
             if n_shapes > slots:
                 self.status.emit(

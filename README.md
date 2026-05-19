@@ -5,76 +5,60 @@
 </p>
 
 <p align="center">
+  <a href="https://youtu.be/8LGvE7O9aeg">
+    <img src="https://img.youtube.com/vi/8LGvE7O9aeg/maxresdefault.jpg" alt="Watch the FD6 trailer" width="600"/>
+  </a>
+  <br/>
+  <sub><a href="https://youtu.be/8LGvE7O9aeg">▶ Trailer / tutorial on YouTube</a></sub>
+</p>
+
+<p align="center">
   <img src="Pink.png" alt="FD6 badge" width="128"/>
 </p>
 
-> Convert any image into a Forza Horizon 6 vinyl group.
+> Convert any image into a vinyl group for **Forza Horizon 3, 4, 5, or 6**.
 
 **Repo:** https://github.com/tokyubevoxelverse/ForzaDesigner6 · **License:** MIT · **Windows 10/11 x64**
-
----
-
-## Requirements
-
-| | |
-|---|---|
-| OS | Windows 10 or 11, 64-bit |
-| Game | Forza Horizon 6 |
-| Disk | ~150 MB free |
-| Microsoft Visual C++ Redistributable | Usually already installed. If FD6 fails to launch, get it [here](https://aka.ms/vs/17/release/vc_redist.x64.exe) |
-
-**Running from source** instead of the EXE additionally needs:
-- Python 3.10+
-- `pip install -r requirements.txt` (installs PySide6, NumPy, Pillow, PyInstaller, pytest)
 
 ---
 
 ## Install
 
 1. Download `FD6.exe` from [Releases](https://github.com/tokyubevoxelverse/ForzaDesigner6/releases).
-2. Double-click it. No installer, no admin rights.
-3. Windows SmartScreen may warn the first time — click "More info" → "Run anyway".
+2. Double-click — no installer, no admin rights. Windows SmartScreen → "More info" → "Run anyway".
+
+Source build: Python 3.10+, `pip install -r requirements.txt`. Microsoft Visual C++ Redistributable is normally already installed; if FD6 fails to launch, grab it [here](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
 ---
 
 ## How to use
 
-### A. Generate the shapes file
+**Generate:**
 
-1. Launch `FD6.exe`.
-2. Click **Upload Image…** and pick any JPEG/PNG.
-3. In the **Settings** panel (right side):
-   - Pick a **Profile** (`balanced` recommended).
-   - Set **Stop at shapes** to your target (e.g. `1500` or `3000`).
-4. Click **Start**. Watch the live preview rebuild your image.
-5. When done, the `.json` is auto-saved next to your image. Click **Download JSON** if you want a copy elsewhere.
+1. Launch `FD6.exe`. Click **Upload Image…** and pick a JPEG/PNG.
+2. Right panel: pick a **Profile** (`balanced` recommended) and **Stop at shapes** (1500 or 3000 typical).
+3. Click **Start**. Watch the live preview rebuild your image. The JSON auto-saves next to your source image when done.
 
-### B. Inject into Forza Horizon 6
+**Inject:**
 
-1. Open **Forza Horizon 6** and open the **Vinyl Group editor**.
-2. Load (or create) a template vinyl group with **at least N spheres**, where N = the shape count of your JSON. Tip: keep one or two reusable templates (1500-sphere and 3000-sphere) saved.
-3. In FD6, click **Upload JSON** and pick your generated `.json`.
-4. A modal dialog appears with live progress:
-   - **Scanning FH6 memory** — 5–8 min first time per game session, seconds on later injections.
-   - **Writing shapes** — ~10–30 sec.
-5. When the status turns 🟢 green, close the dialog and check FH6 — your image is now the vinyl group.
+1. Launch your target game (**Forza Horizon 3, 4, 5, or 6**) and open the Vinyl Group editor.
+2. Load a vinyl group with **at least N spheres**, where N is the shape count of your JSON. Keep saved 1500-sphere / 3000-sphere templates for reuse — fastest path is a fresh untouched template.
+3. In FD6: pick your target from the **Target** dropdown, click **Upload JSON**, then **Inject into [game]**.
+4. Watch the dialog progress. **Do not click anything in FD6 or the game during injection** — interacting can reallocate the in-game memory mid-write and fail the operation.
+5. When the status turns 🟢 green, the vinyl group has been painted with your shapes.
+
+**Re-injecting onto an already-painted template** works too — the locator falls back to an RTTI vtable scan when the fresh-sphere fingerprint misses. Expect an extra 2–5 minutes on the first re-injection scan per game session; subsequent ones are instant.
 
 ---
 
-## ✅ Do
+## ✅ Do / ❌ Don't
 
-- Open FH6 and the vinyl editor **before** clicking Inject.
-- Keep at least one template vinyl group saved (sphere count ≥ your largest JSON).
-- Let the injection finish — wait for the green status.
-- Re-use the same JSON to re-inject if you mess up — generation only needs to happen once per image.
-- Edit your vinyl group freely **between** injections.
-
-## ❌ Don't
-
-- **Don't edit, add, delete, or move any shape in FH6 during an active injection.** The dialog warns you. Editing reallocates the vinyl group's memory mid-write and the injection will fail. (Won't crash the game — just retry.)
-- Don't close FH6 mid-injection.
-- Don't run FD6 with admin rights "just in case" — it doesn't need them and may behave differently.
-- Don't share your generated JSONs publicly without context — community etiquette: credit the source image.
+- **Do** open the game's vinyl editor *before* clicking Inject.
+- **Do** keep one or two sphere templates saved for fast re-use.
+- **Do** wait for the green status — large-game scans can take minutes.
+- **Don't** edit, add, delete, or move shapes in-game during an active injection.
+- **Don't** click anything in FD6 during the RTTI fallback phase. Windows may label it "Not Responding"; it isn't — let it finish.
+- **Don't** close the game mid-injection or run FD6 as admin.
 
 ---
 
@@ -82,26 +66,11 @@
 
 | Problem | Fix |
 |---|---|
-| Splash video hangs | Click anywhere or press Esc to skip. Hard 30-second auto-skip is always active. |
-| "Patterns file not populated" warning on Inject | The `fh6_patterns.json` file was edited or corrupted. Restore it from the Git repo. |
-| Inject finds 0 shape structs | FH6 patched and the vtable RVA shifted. See [Re-derive RVA](#re-derive-rva-after-an-fh6-update) below. |
-| Inject says "template has X slots but JSON has Y" | Your template vinyl group doesn't have enough spheres. Load a bigger template. |
-| Shapes appear offset / wrong scale | Known: FD6 currently writes raw pixel coords; FH6's canvas may use different units. Open an issue with a screenshot. |
-| FH6 crashes after Inject | Should not happen — file an issue with your FH6 version and the JSON used. |
-
-### Re-derive RVA after an FH6 update
-
-The vtable RVA in `fd6/inject/patterns/fh6_patterns.json` is tied to a specific FH6 build. If a patch shifts it:
-
-```powershell
-# With FH6 open, vinyl editor active, one sphere placed at a known X coordinate:
-python -m fd6.inject scan-float <known X>
-python -m fd6.inject narrow <moved X>      # repeat until 1 hit
-python -m fd6.inject dump <addr> 256
-# vtable address = <addr> - 0x10  (struct start is 0x10 before the X field)
-# new RVA = vtable_address - forzahorizon6.exe module base
-# Edit anchor.vtable_rva in fh6_patterns.json with the new value (hex string, e.g. "0x6815CF8")
-```
+| Splash video hangs | Click anywhere or press Esc. A hard 30 s auto-skip is always active. |
+| "No confident match" error | Vinyl editor not open, or template doesn't have enough spheres for the JSON's shape count. Load a bigger template. |
+| Re-injection scan looks stalled | RTTI fallback phase can run silently for 2–5 min on a large game. The dialog resumes once a candidate is located. |
+| Shapes offset or wrong scale | File an issue with the JSON, the source image, and a screenshot of the in-game result. |
+| Game patched, all candidates rejected | The per-game struct offset may have shifted. Open an issue — the profile in `fd6/inject/game_profiles.py` needs updating. |
 
 ---
 
@@ -114,35 +83,31 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# Run from source:
-python -m fd6
-
-# Run tests:
-pytest
-
-# Build the single-file EXE:
-.\build_exe.bat        # → dist\FD6.exe
+python -m fd6                # run from source
+pytest                       # run tests
+.\build_exe.bat              # → dist/FD6.exe
 ```
 
 ---
 
 ## Credits
 
-Inspired by the work of:
+Inspired by:
+
 - **forza-painter** by `the_adawg` (FH4/FH5 — MIT)
 - **geometrize-lib** by Sam Twidale (MIT)
 - **Primitive** by Michael Fogleman (MIT)
-- Special thanks to **bvzrays** for his help with color offsets in allocated memory. helped a lot! https://github.com/bvzrays
+- **bvzrays**' publicly available [forza-painter-fh6](https://github.com/bvzrays/forza-painter-fh6) (MIT). FD6 uses his published research for: the CLiveryGroup struct field offsets, the (X, −Y) position convention and 63 / 127 scale divisors, the confirmation that FH5 and FH6 share the same struct layout (which made FH3/FH4/FH5 support feasible), and the MSVC RTTI vtable-scan locator approach (FD6's `rtti_locator.py` looks up `.?AVCLiveryGroup@@` by C++ type). FD6 does **not** ship or load community-distributed `forza-codes.dat` runtime pattern files — only the single baseline RTTI class name is hardcoded.
 
-FH6 vinyl-group memory layout was reverse-engineered from scratch for this project and is documented in [`fd6/inject/patterns/fh6_patterns.json`](fd6/inject/patterns/fh6_patterns.json) for community reuse.
+The FH6 vinyl-group memory layout was independently reverse-engineered from scratch for this project against FH6 build 354.221 and later cross-validated against bvzrays' research; the two derivations matched on every field offset. The sphere-template injection workflow (load a fresh sphere group → fingerprint-locate it in memory → overwrite each sphere's bytes in place) and the strict 5/5 + 95% full-table validation gate are FD6 originals; both stay as the **primary** locator path, with RTTI vtable scan as the **secondary** fallback for re-injection onto already-painted templates.
+
+---
 
 ## Disclaimer
 
-**Use entirely at your own risk.** FD6 modifies the memory of a running Forza Horizon 6 process in order to populate vinyl-group shapes. While the tool does not patch the game executable, install drivers, modify save files, or attempt to bypass any anti-cheat or DRM system, **memory modification of a live game process may be interpreted by Microsoft, Xbox Live, or Turn 10 / Playground Games as a violation of the Microsoft Services Agreement, the Xbox Community Standards, or the Forza Horizon 6 terms of use. Doing so may result in temporary suspension or permanent ban of your Xbox / Microsoft account, loss of access to your purchased games, online services, achievements, and any content created with FD6.**
+**Use entirely at your own risk.** FD6 modifies the memory of a running Forza Horizon process to populate vinyl-group shapes. It does not patch the game executable, install drivers, modify save files, or attempt to bypass any anti-cheat or DRM system. However, **memory modification of a live game process may be interpreted by Microsoft, Xbox Live, or the game's publisher (Turn 10 / Playground Games) as a violation of the Microsoft Services Agreement, the Xbox Community Standards, or the relevant Forza title's terms of use. Doing so may result in temporary suspension or permanent ban of your Xbox / Microsoft account, loss of access to purchased games, online services, achievements, and any content created with FD6.**
 
-The author(s) and contributors of Forza Designer 6 **accept no responsibility or liability whatsoever** for any consequences arising from the use of this software, including but not limited to: account suspension or termination, loss of game progress, save corruption, loss of online services, hardware issues, or damages of any kind. By downloading, building, installing, or running FD6, you acknowledge that you understand these risks and accept them in full.
-
-If you are uncertain whether using FD6 is acceptable to you, **do not run it.** This tool is provided as-is, MIT-licensed, with no warranties of any kind. Not affiliated with, endorsed by, or sponsored by Turn 10 Studios, Playground Games, Microsoft, Xbox, or any official Forza brand.
+The authors and contributors of Forza Designer 6 **accept no responsibility or liability whatsoever** for any consequences arising from the use of this software. By downloading, building, installing, or running FD6 you acknowledge these risks and accept them in full. This tool is provided as-is, MIT-licensed, with no warranties of any kind. Not affiliated with, endorsed by, or sponsored by Turn 10 Studios, Playground Games, Microsoft, Xbox, or any official Forza brand.
 
 ## License
 

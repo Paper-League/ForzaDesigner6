@@ -99,13 +99,49 @@ def composite(
 STICKER_OVERLAP_MIN = 0.995
 
 
+def precompute_canvas_error(
+    current: np.ndarray,
+    target: np.ndarray,
+    alpha_mask: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """Return (full_canvas_squared_error, normalizer_n) for the current canvas.
+
+    These are constants for the lifetime of a single canvas snapshot — they
+    don't depend on the candidate shape being scored — so a batch of N
+    candidate evaluations against the same canvas can compute them ONCE
+    instead of N times. This is what made score_shape O(image_size × N) at
+    high resolutions; with the cache it's O(image_size + bbox_size × N).
+
+    The math is identical to what score_shape did inline before. Same
+    result, ~N× less work for the random-search phase.
+    """
+    if alpha_mask is None:
+        diff = current.astype(np.int32) - target.astype(np.int32)
+        full_sq = float((diff * diff).sum())
+        n = float(current.shape[0] * current.shape[1] * 3)
+        return full_sq, n
+    weight_full = (alpha_mask > 0)[:, :, None].astype(np.float32)
+    diff = (current.astype(np.float32) - target.astype(np.float32)) ** 2
+    full_sq = float((diff * weight_full).sum())
+    n = float(weight_full.sum() * 3)
+    return full_sq, n
+
+
 def score_shape(
     shape: Shape,
     current: np.ndarray,
     target: np.ndarray,
     alpha_mask: np.ndarray | None = None,
+    *,
+    canvas_full_sq: float | None = None,
+    canvas_norm: float | None = None,
 ) -> tuple[float, tuple[int, int, int, int]]:
     """Score a candidate without modifying the working canvas. Returns (rms_if_committed, optimal_color).
+
+    `canvas_full_sq` and `canvas_norm` may be precomputed via
+    `precompute_canvas_error` and reused across many candidate evaluations
+    against the SAME canvas. When None, they're computed here — semantically
+    identical, just slower.
 
     Sticker-mode contract: a shape must sit ESSENTIALLY ENTIRELY inside the
     opaque region or it gets rejected with +inf. FH6 paints the full ellipse
@@ -145,21 +181,23 @@ def score_shape(
     blended = m * (a * src + (1.0 - a) * region_cur) + (1.0 - m) * region_cur
     diff_in = blended - region_tgt
     if alpha_mask is None:
-        diff_out_squared_sum = float(((current.astype(np.int32) - target.astype(np.int32)) ** 2).sum())
+        if canvas_full_sq is None or canvas_norm is None:
+            full_sq, n_px = precompute_canvas_error(current, target, None)
+        else:
+            full_sq, n_px = canvas_full_sq, canvas_norm
         region_old_sq = float(((region_cur - region_tgt) ** 2).sum())
         region_new_sq = float((diff_in ** 2).sum())
-        total_sq = diff_out_squared_sum - region_old_sq + region_new_sq
-        n_px = current.shape[0] * current.shape[1] * 3
+        total_sq = full_sq - region_old_sq + region_new_sq
         return float(np.sqrt(max(0.0, total_sq) / n_px)), color
     # Sticker mode: weighted RMS, only opaque pixels contribute
-    weight_full = (alpha_mask > 0)[:, :, None].astype(np.float32)
-    weight_region = weight_full[y0:y1, x0:x1]
-    diff_out_sq = ((current.astype(np.float32) - target.astype(np.float32)) ** 2) * weight_full
-    diff_out_squared_sum = float(diff_out_sq.sum())
+    if canvas_full_sq is None or canvas_norm is None:
+        full_sq, n = precompute_canvas_error(current, target, alpha_mask)
+    else:
+        full_sq, n = canvas_full_sq, canvas_norm
+    weight_region = ((alpha_mask[y0:y1, x0:x1] > 0).astype(np.float32))[:, :, None]
     region_old_sq = float((((region_cur - region_tgt) ** 2) * weight_region).sum())
     region_new_sq = float(((diff_in ** 2) * weight_region).sum())
-    total_sq = diff_out_squared_sum - region_old_sq + region_new_sq
-    n = float(weight_full.sum() * 3)
+    total_sq = full_sq - region_old_sq + region_new_sq
     if n < 1:
         return 0.0, color
     return float(np.sqrt(max(0.0, total_sq) / n)), color

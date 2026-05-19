@@ -18,13 +18,22 @@ class ImageView(QLabel):
         self._pix: QPixmap | None = None
 
     def set_numpy(self, arr: np.ndarray) -> None:
-        if arr.ndim != 3 or arr.shape[2] != 3:
+        """Display an HxWx3 (RGB) or HxWx4 (RGBA) numpy array.
+
+        Sticker-mode preview emits RGBA so the canvas's transparent regions
+        render as the pane background instead of a solid grey rectangle —
+        matching how the Source view displays the same PNG.
+        """
+        if arr.ndim != 3 or arr.shape[2] not in (3, 4):
             return
-        h, w, _ = arr.shape
+        h, w, c = arr.shape
         # QImage expects bytes contiguous; force a copy when not already.
         if not arr.flags["C_CONTIGUOUS"]:
             arr = np.ascontiguousarray(arr)
-        img = QImage(arr.data, w, h, w * 3, QImage.Format_RGB888).copy()
+        if c == 4:
+            img = QImage(arr.data, w, h, w * 4, QImage.Format_RGBA8888).copy()
+        else:
+            img = QImage(arr.data, w, h, w * 3, QImage.Format_RGB888).copy()
         self._pix = QPixmap.fromImage(img)
         self._rescale()
 

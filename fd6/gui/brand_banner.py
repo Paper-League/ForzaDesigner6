@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 
 
 TOKYUBE_URL = "https://tokyube.com"
+TUTORIAL_URL = "https://youtu.be/8LGvE7O9aeg"
+SUBSCRIBE_URL = "https://www.youtube.com/@DaMostPalone?sub_confirmation=1"
 DISCORD_INVITE_URL = "https://discord.gg/PJFWdykGmS"
 
 
@@ -60,11 +62,12 @@ class BrandBanner(QWidget):
     """Brand banner that sits in the bottom-left corner. Click panel to collapse / click pill to expand."""
 
     MARGIN = 12
-    # Taller now to accommodate two CTA buttons stacked above the icon/title row:
+    # Taller now to accommodate three CTA buttons stacked above the icon/title row:
     #   row 1: tokyube.com (rainbow)
-    #   row 2: Join the Imagineers (Discord orange — matches the tokyube site button)
-    #   row 3: icon + Forza Designer 6 title (existing)
-    BANNER_HEIGHT = 148
+    #   row 2: Tutorial / Trailer (YouTube red)
+    #   row 3: Join the Imagineers (Discord orange — matches the tokyube site button)
+    #   row 4: icon + Forza Designer 6 title (existing)
+    BANNER_HEIGHT = 184
     BANNER_WIDTH = 260
     PILL_SIZE = 40
     CTA_HEIGHT = 30
@@ -120,7 +123,25 @@ class BrandBanner(QWidget):
         self.tokyube_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(TOKYUBE_URL)))
         outer.addWidget(self.tokyube_btn)
 
-        # ── CTA 2: Join the Imagineers (matches site .btn-discord orange) ────
+        # ── CTA 2: Tutorial / Trailer (YouTube red, white play glyph) ────────
+        self.tutorial_btn = QPushButton("▶  Tutorial / Trailer", self.panel)
+        self.tutorial_btn.setCursor(Qt.PointingHandCursor)
+        self.tutorial_btn.setFixedHeight(self.CTA_HEIGHT)
+        self.tutorial_btn.setStyleSheet(
+            "QPushButton {"
+            " background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+            "  stop:0 #ff5252, stop:0.5 #ff0000, stop:1 #b30000);"
+            " color: #ffffff; font-weight: bold; letter-spacing: 0.5px;"
+            " border: 1px solid #000; border-radius: 6px; padding: 0 10px; }"
+            "QPushButton:hover { border-color: #fff; }"
+        )
+        self.tutorial_btn.setToolTip(
+            "Watch the FD6 trailer (opens the video, plus a subscribe prompt in a second tab)"
+        )
+        self.tutorial_btn.clicked.connect(self._on_tutorial_clicked)
+        outer.addWidget(self.tutorial_btn)
+
+        # ── CTA 3: Join the Imagineers (matches site .btn-discord orange) ────
         self.discord_btn = QPushButton("Join the Imagineers", self.panel)
         self.discord_btn.setCursor(Qt.PointingHandCursor)
         self.discord_btn.setFixedHeight(self.CTA_HEIGHT)
@@ -196,6 +217,16 @@ class BrandBanner(QWidget):
         self._pix = pm
         self.icon_label.setPixmap(pm.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.pill.setIcon(QIcon(pm.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+
+    def _on_tutorial_clicked(self) -> None:
+        """Open the trailer in tab 1 and the subscribe prompt in tab 2.
+
+        Order matters: open the trailer first so it lands on the active tab —
+        most browsers focus the first opened URL when receiving two openUrl
+        calls back-to-back, and we want the user watching the video.
+        """
+        QDesktopServices.openUrl(QUrl(TUTORIAL_URL))
+        QDesktopServices.openUrl(QUrl(SUBSCRIBE_URL))
 
     def _panel_clicked(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:

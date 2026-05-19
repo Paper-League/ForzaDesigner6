@@ -34,13 +34,40 @@ def _is_stickerlike(shapes: list[Shape]) -> bool:
     return n_transparent > max(5, len(shapes) // 20)
 
 
-def render_shapes(shapes: list[Shape], width: int, height: int, background=(255, 255, 255)) -> np.ndarray:
-    """Composite all shapes (in order) onto a fresh canvas. Returns (H, W, 3) uint8.
+def render_shapes(
+    shapes: list[Shape], width: int, height: int,
+    background=(255, 255, 255), transparent_bg: bool = False,
+) -> np.ndarray:
+    """Composite all shapes (in order) onto a fresh canvas.
 
-    If `background` is the literal string "auto", uses a checkerboard for
-    sticker-style content (many low-alpha shapes) and white otherwise — so
-    transparency is visually obvious in the preview pane.
+    Returns (H, W, 3) uint8 by default, or (H, W, 4) RGBA when
+    `transparent_bg=True`. RGBA mode is used when reloading a sticker-mode
+    JSON so the preview pane shows true transparency outside the painted
+    silhouette instead of a solid white rectangle.
     """
+    if transparent_bg:
+        # Sticker preview path: paint shapes onto a neutral grey backdrop
+        # (mirrors what the live engine uses in sticker mode) and build the
+        # alpha channel as the union of every shape's coverage mask. ImageView
+        # renders the result with Format_RGBA8888 so unpainted areas are truly
+        # transparent against the pane background.
+        canvas = np.full((height, width, 3), 40, dtype=np.uint8)
+        alpha = np.zeros((height, width), dtype=np.uint8)
+        for s in shapes:
+            mask_local, bbox = s.rasterize_mask(width, height)
+            x0, y0, x1, y1 = bbox
+            if x1 <= x0 or y1 <= y0 or mask_local.size == 0:
+                continue
+            color = s.color
+            a_shape = (color[3] / 255.0) if len(color) >= 4 else 1.0
+            region_cur = canvas[y0:y1, x0:x1].astype(np.float32)
+            src = np.array(color[:3], dtype=np.float32)
+            m = (mask_local.astype(np.float32) / 255.0)[:, :, None]
+            blended = m * (a_shape * src + (1.0 - a_shape) * region_cur) + (1.0 - m) * region_cur
+            canvas[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
+            alpha[y0:y1, x0:x1] = np.maximum(alpha[y0:y1, x0:x1], mask_local)
+        return np.dstack([canvas, alpha])
+
     if background == "auto":
         canvas = _checkerboard(width, height) if _is_stickerlike(shapes) \
                  else np.full((height, width, 3), 255, dtype=np.uint8)

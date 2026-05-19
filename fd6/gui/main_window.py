@@ -484,8 +484,15 @@ class MainWindow(QMainWindow):
             return
         w, h = doc.image_size if doc.image_size and doc.image_size[0] > 0 else (1200, 800)
         self.statusBar().showMessage(f"Rendering preview of {len(shapes)} shapes from {json_path.name}...")
-        # Render in the GUI thread — fine for up to a few thousand shapes (<1 sec)
-        canvas = render_shapes(shapes, w, h, background=(255, 255, 255))
+        # Render with transparent backdrop when EITHER:
+        #   - the JSON was generated in sticker mode (sticker_mode=True in file), OR
+        #   - the current "Add white background to transparent images" toggle is
+        #     UNCHECKED at upload time — the user's current intent overrides the
+        #     stored flag, which also covers legacy JSONs that pre-date the field.
+        white_bg_checked = self.settings_panel.sticker_mode_cb.isChecked()
+        render_transparent = bool(getattr(doc, "sticker_mode", False)) or not white_bg_checked
+        canvas = render_shapes(shapes, w, h, background=(255, 255, 255),
+                               transparent_bg=render_transparent)
         self.preview.source_view.clear_image()
         self.preview.preview_view.set_numpy(canvas)
         self.preview.status_label.setText(
@@ -517,12 +524,19 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Inject in progress", "An injection is already running. Wait for it to finish.")
             return
 
-        self._inject_worker = InjectionWorker(json_path)
+        target_key = self.settings_panel.selected_target_profile_key()
+        self._inject_worker = InjectionWorker(json_path, profile_key=target_key)
         self._inject_thread = QThread(self)
         self._inject_worker.moveToThread(self._inject_thread)
 
-        # Modal blocking dialog
-        self._inject_dialog = InjectionDialog(self, json_name=json_path.name)
+        # Modal blocking dialog — labelled with the selected target so users
+        # see FH4 / FH5 / FH3 instead of always reading "FH6".
+        from fd6.inject.game_profiles import get_profile, default_profile
+        try:
+            game_label = get_profile(target_key).label
+        except ValueError:
+            game_label = default_profile().label
+        self._inject_dialog = InjectionDialog(self, json_name=json_path.name, game_label=game_label)
 
         # Wire worker → both dialog and status bar
         self._inject_worker.scan_progress.connect(self._inject_dialog.on_scan_progress)
@@ -568,8 +582,17 @@ class MainWindow(QMainWindow):
 
     def _on_inject_scan_progress(self, scanned: int, total: int, hits: int) -> None:
         pct = int(round(100 * scanned / max(1, total)))
+        try:
+            from fd6.inject.game_profiles import get_profile
+            target_key = self.settings_panel.selected_target_profile_key()
+            short = get_profile(target_key).label.replace(" (BETA)", "")
+            # Compress "Forza Horizon N" → "FHN" for tight status bar text.
+            if short.startswith("Forza Horizon ") and short[len("Forza Horizon "):].strip().isdigit():
+                short = "FH" + short[len("Forza Horizon "):].strip()
+        except Exception:
+            short = "FH6"
         self._set_inject_status(
-            f"Scanning FH6 memory… {scanned}/{total} regions ({pct}%) — {hits} shape structs found so far",
+            f"Scanning {short} memory… {scanned}/{total} regions ({pct}%) — {hits} shape structs found so far",
             "info",
         )
 

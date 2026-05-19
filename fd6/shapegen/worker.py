@@ -96,6 +96,7 @@ class GenerationWorker(QObject):
                         image_size=(target.shape[1], target.shape[0]),
                         shapes=self._engine.shapes,
                         profile_name=self.profile.name,
+                        sticker_mode=self.sticker_mode,
                     )
                     save_json(doc, cp_path)
                     self.checkpoint_written.emit(str(cp_path))
@@ -108,6 +109,7 @@ class GenerationWorker(QObject):
                         image_size=(target.shape[1], target.shape[0]),
                         shapes=self._engine.shapes,
                         profile_name=self.profile.name,
+                        sticker_mode=self.sticker_mode,
                     )
                     save_json(doc, final_path)
                     self.finished.emit(str(final_path))
