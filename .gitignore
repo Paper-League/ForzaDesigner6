@@ -2,6 +2,8 @@
 build/
 dist/
 *.spec
+*_log.txt
+fd6_build*_log.txt
 
 # Python
 __pycache__/
