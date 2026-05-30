@@ -57,7 +57,6 @@ pre_inject.json
 square_at_*.json
 
 # Tool task / output caches
-.claude/
 tasks/
 
 # Third-party tooling vendored locally — do not redistribute.

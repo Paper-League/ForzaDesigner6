@@ -21,6 +21,10 @@ class Profile:
     save_every: int = 100
     stop_at: int = 3000
     shape_types: list[str] = field(default_factory=lambda: ["rotated_ellipse"])
+    # Compute backend for the shape search: "auto" (GPU if a CUDA device + CuPy
+    # are present, else CPU), "cpu" (force the multiprocess CPU path), or "gpu"
+    # (force CuPy; silently falls back to CPU if unavailable or it errors).
+    compute_backend: str = "auto"
 
     def to_ini(self) -> str:
         cp = configparser.ConfigParser()
@@ -38,6 +42,7 @@ class Profile:
             "saveEvery": str(self.save_every),
             "stopAt": str(self.stop_at),
             "shapeTypes": ",".join(self.shape_types),
+            "computeBackend": self.compute_backend,
         }
         from io import StringIO
         buf = StringIO()
@@ -88,6 +93,8 @@ def load_profile(name: str, text: str) -> Profile:
     p.stop_at = getint("stopAt", p.stop_at)
     if "shapeTypes" in section:
         p.shape_types = _parse_str_list(section["shapeTypes"])
+    backend = getstr("computeBackend", p.compute_backend).lower().strip()
+    p.compute_backend = backend if backend in ("auto", "cpu", "gpu") else "auto"
     return p
 
 

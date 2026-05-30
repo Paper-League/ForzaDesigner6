@@ -63,7 +63,11 @@ class GameProfile:
     beta_note: str = ""
 
 
-# Forza Horizon 6 — primary, fully validated against build 354.221.
+# Forza Horizon 6 — primary target. Offsets validated against build 354.221 and
+# carried forward to 364.933 (re-verify via `python -m fd6.inject` if injection
+# misbehaves; corrected offsets can be applied through .fd6_offsets.json without
+# a rebuild). These dataclass values are the single source of truth — the
+# injector seeds its module-level offset constants from them at attach time.
 FH6 = GameProfile(
     key="fh6",
     label="Forza Horizon 6",

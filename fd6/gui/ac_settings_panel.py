@@ -171,7 +171,12 @@ class ACSettingsPanel(QWidget):
     def _refresh_car_list(self) -> None:
         self.car_combo.clear()
         prof = self.selected_profile()
-        cars = list_cars(prof)
+        try:
+            cars = list_cars(prof)
+        except Exception:
+            # Populating the dropdown must never take the whole app down (this
+            # runs during MainWindow construction). Degrade to the placeholder.
+            cars = []
         if not cars:
             self.car_combo.addItem("(no cars found — install game or open livery editor once)", "")
             self.car_combo.setEnabled(False)

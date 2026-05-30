@@ -143,7 +143,13 @@ class InjectionDialog(QDialog):
         # Scan phase is treated as 0–50% of overall; write phase is 50–100%
         pct = int(round(50 * scanned / max(1, total)))
         self.progress.setValue(pct)
-        self.stage_label.setText(f"Stage 1 of 2 — Scanning {self._short_label} memory")
+        # The scan walks the biggest memory regions first, so it starts slow and
+        # speeds up as it goes — tell the user so the early crawl doesn't look
+        # like a freeze.
+        self.stage_label.setText(
+            f"Stage 1 of 2 — Scanning {self._short_label} memory "
+            "(starts slow, gets faster as it goes)"
+        )
         self.detail_label.setText(
             f"{scanned}/{total} regions  •  {hits} strict LiveryGroup candidate(s) found"
         )

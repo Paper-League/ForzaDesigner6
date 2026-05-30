@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import shared_memory
 
 import numpy as np
+from concurrent.futures.process import BrokenProcessPool
 
 from fd6.shapegen.profile import Profile
 from fd6.shapegen.scoring import (
@@ -81,6 +82,17 @@ def _safe_worker_count(user_requested: int, random_samples: int) -> int:
     return max(1, min(requested, cpu_cap, ram_cap, work_cap))
 
 
+class EngineWorkerError(RuntimeError):
+    """Raised when the parallel shape search can't produce a result.
+
+    Carries a user-facing, actionable message (already formatted). `Engine.run`
+    surfaces `str(exc)` verbatim in the error dialog rather than the raw
+    `Type: msg` form, so users see e.g. an out-of-memory hint instead of the
+    cryptic 'TypeError: exceptions must derive from BaseException' that a dying
+    worker process used to produce.
+    """
+
+
 @dataclass
 class EngineConfig:
     profile: Profile
@@ -90,7 +102,7 @@ class EngineConfig:
 @dataclass
 class EngineEvent:
     """Event emitted at preview/save points. The worker translates these into Qt signals."""
-    kind: str  # "shape_committed" | "checkpoint" | "preview" | "done" | "error"
+    kind: str  # "shape_committed" | "checkpoint" | "preview" | "done" | "error" | "backend"
     shape_count: int = 0
     rms: float = 0.0
     canvas: np.ndarray | None = None  # uint8 (H, W, 3); only set for preview/done
@@ -140,8 +152,15 @@ def _init_worker(
 def _worker_independent_search(args: tuple) -> tuple:
     """One worker's independent (random search + hill-climb) sequence.
 
-    Reads canvas directly from shared memory; no per-task copy. Returns the
-    best (score, color, shape) it found. Main picks the global best.
+    Reads canvas directly from shared memory; no per-task copy. Returns a
+    4-tuple ``(score, color, shape, error)``: on success ``error`` is None; on
+    failure the first three are sentinels and ``error`` is a formatted string.
+
+    CRITICAL: the whole body is wrapped so NOTHING — not even an odd library
+    `raise` of a non-exception — can propagate raw across the ProcessPool
+    boundary. A raw propagation is what produced the user-visible
+    'TypeError: exceptions must derive from BaseException' mid-generation; the
+    error now comes back as data and the main process decides what to do.
 
     Speed path: precomputes the full-canvas squared-error scalar ONCE at the
     start of the batch and reuses it for all 1000+ candidate evaluations.
@@ -149,51 +168,54 @@ def _worker_independent_search(args: tuple) -> tuple:
     scratch, which dominated the per-shape cost at high max_resolution.
     Result is mathematically identical; just no longer recomputed N times.
     """
-    (types, n_random, n_mutate, w, h, seed, max_size_frac) = args
-    canvas = _W_CANVAS
-    target = _W_TARGET
-    alpha = _W_ALPHA
-    edge_w = _W_EDGE_WEIGHT
-    rng = random.Random(seed)
+    try:
+        (types, n_random, n_mutate, w, h, seed, max_size_frac) = args
+        canvas = _W_CANVAS
+        target = _W_TARGET
+        alpha = _W_ALPHA
+        edge_w = _W_EDGE_WEIGHT
+        rng = random.Random(seed)
 
-    # Precompute once for this batch — see precompute_canvas_error docstring.
-    canvas_full_sq, canvas_norm = precompute_canvas_error(canvas, target, alpha, edge_w)
+        # Precompute once for this batch — see precompute_canvas_error docstring.
+        canvas_full_sq, canvas_norm = precompute_canvas_error(canvas, target, alpha, edge_w)
 
-    # Random search
-    best_score = float("inf")
-    best_color = None
-    best_shape = None
-    for _ in range(max(1, n_random)):
-        s = random_shape(rng, w, h, types, max_size_frac=max_size_frac)
-        score, color = score_shape(s, canvas, target, alpha,
-                                   canvas_full_sq=canvas_full_sq,
-                                   canvas_norm=canvas_norm,
-                                   edge_weight=edge_w)
-        if score < best_score:
-            best_score, best_color, best_shape = score, color, s
-    if best_shape is None:
-        return (float("inf"), None, None)
+        # Random search
+        best_score = float("inf")
+        best_color = None
+        best_shape = None
+        for _ in range(max(1, n_random)):
+            s = random_shape(rng, w, h, types, max_size_frac=max_size_frac)
+            score, color = score_shape(s, canvas, target, alpha,
+                                       canvas_full_sq=canvas_full_sq,
+                                       canvas_norm=canvas_norm,
+                                       edge_weight=edge_w)
+            if score < best_score:
+                best_score, best_color, best_shape = score, color, s
+        if best_shape is None:
+            return (float("inf"), None, None, None)
 
-    # Hill climb on the local best
-    best_shape.color = best_color
-    no_improve = 0
-    cap = max(1, n_mutate)
-    for _ in range(cap):
-        cand = best_shape.mutate(rng, w, h)
-        score, color = score_shape(cand, canvas, target, alpha,
-                                   canvas_full_sq=canvas_full_sq,
-                                   canvas_norm=canvas_norm,
-                                   edge_weight=edge_w)
-        if score < best_score:
-            best_score, best_color, best_shape = score, color, cand
-            no_improve = 0
-        else:
-            no_improve += 1
-            if no_improve >= max(20, cap // 4):
-                break
-    if best_color is not None:
+        # Hill climb on the local best
         best_shape.color = best_color
-    return (best_score, best_color, best_shape)
+        no_improve = 0
+        cap = max(1, n_mutate)
+        for _ in range(cap):
+            cand = best_shape.mutate(rng, w, h)
+            score, color = score_shape(cand, canvas, target, alpha,
+                                       canvas_full_sq=canvas_full_sq,
+                                       canvas_norm=canvas_norm,
+                                       edge_weight=edge_w)
+            if score < best_score:
+                best_score, best_color, best_shape = score, color, cand
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= max(20, cap // 4):
+                    break
+        if best_color is not None:
+            best_shape.color = best_color
+        return (best_score, best_color, best_shape, None)
+    except Exception as exc:
+        return (float("inf"), None, None, f"{type(exc).__name__}: {exc}")
 
 
 # ── Engine ───────────────────────────────────────────────────────────────────
@@ -265,19 +287,44 @@ class Engine:
             user_requested=self.profile.max_threads,
             random_samples=self.profile.random_samples,
         )
-        target_bytes = self.target.tobytes()
-        alpha_bytes = self.alpha_mask.tobytes() if self.alpha_mask is not None else None
-        alpha_shape = self.alpha_mask.shape if self.alpha_mask is not None else None
-        self._executor = ProcessPoolExecutor(
-            max_workers=self._n_workers,
-            initializer=_init_worker,
-            initargs=(
-                target_bytes, self.target.shape,
-                self._canvas_shm.name, self.canvas.shape,
-                alpha_bytes, alpha_shape,
-                self._edge_weight_shm.name, self.edge_weight.shape,
-            ),
+        # Stash the worker init args; the CPU ProcessPool is created lazily so
+        # GPU runs don't pay the process-spawn cost (and so a GPU→CPU fallback
+        # can spin it up on demand).
+        self._initargs = (
+            self.target.tobytes(), self.target.shape,
+            self._canvas_shm.name, self.canvas.shape,
+            self.alpha_mask.tobytes() if self.alpha_mask is not None else None,
+            self.alpha_mask.shape if self.alpha_mask is not None else None,
+            self._edge_weight_shm.name, self.edge_weight.shape,
         )
+        self._executor: ProcessPoolExecutor | None = None
+
+        # Resolve the compute backend once. GPU (CuPy) only handles ellipse-only
+        # runs; anything else uses the CPU path. Any failure to build the GPU
+        # searcher degrades to CPU. `self._backend` is the *effective* backend.
+        from fd6.shapegen import gpu as _gpu
+        self._gpu = None
+        self._backend = "cpu"
+        self._gpu_fallback_reason = ""
+        self._backend_announced = "cpu"
+        ellipse_only = all(t in ("rotated_ellipse", "ellipse") for t in (self.profile.shape_types or []))
+        requested = _gpu.resolve_backend(getattr(self.profile, "compute_backend", "auto"))
+        if requested == "gpu" and ellipse_only:
+            try:
+                self._gpu = _gpu.EllipseBatchSearcher(self.target, self.alpha_mask, self.edge_weight)
+                self._backend = "gpu"
+            except Exception:
+                self._gpu = None
+                self._backend = "cpu"
+
+    def _ensure_executor(self) -> None:
+        """Create the CPU worker pool on first use (CPU runs and GPU fallback)."""
+        if self._executor is None:
+            self._executor = ProcessPoolExecutor(
+                max_workers=self._n_workers,
+                initializer=_init_worker,
+                initargs=self._initargs,
+            )
 
     def request_stop(self) -> None:
         self._stop = True
@@ -359,6 +406,7 @@ class Engine:
         gave each chain a much worse starting point and visibly degraded early
         shape selection — that's the regression we're correcting here.
         """
+        self._ensure_executor()
         n_random = max(1, n_random)
         n_mutate = max(1, n_mutate)
         args_list = [
@@ -368,11 +416,50 @@ class Engine:
         ]
         best_score = float("inf")
         best_shape: Shape | None = None
-        for (score, color, shape) in self._executor.map(_worker_independent_search, args_list):
-            if shape is not None and score < best_score:
-                shape.color = color
-                best_score, best_shape = score, shape
+        worker_errors: list[str] = []
+        try:
+            for (score, color, shape, err) in self._executor.map(_worker_independent_search, args_list):
+                if err is not None:
+                    worker_errors.append(err)
+                    continue
+                if shape is not None and score < best_score:
+                    shape.color = color
+                    best_score, best_shape = score, shape
+        except BrokenProcessPool as exc:
+            # A worker process died outright (most commonly the OS killed it for
+            # running out of memory at high Max resolution / sample counts).
+            raise EngineWorkerError(
+                "A worker process was terminated unexpectedly — this usually "
+                "means it ran out of memory. Try lowering Max resolution, "
+                "Random samples, or Threads, or pick a lighter profile."
+            ) from exc
+        # Survivors carry the iteration: only fail if EVERY worker errored and we
+        # have nothing to commit. Surface the underlying worker message so the
+        # cause is visible instead of a cryptic exception type.
+        if best_shape is None and worker_errors:
+            raise EngineWorkerError(
+                "Shape search failed in every worker. First error: "
+                + worker_errors[0]
+            )
         return best_score, best_shape
+
+    def _search(self, types: list[str], n_random: int, n_mutate: int,
+                max_size_frac: float | None = None) -> tuple[float, Shape | None]:
+        """Dispatch one iteration's search to the active backend.
+
+        GPU runs in the main process (one batched search). If a GPU op fails at
+        runtime, we permanently fall back to the CPU pool for the rest of the run
+        and record it so `run()` can tell the user via a backend event.
+        """
+        if self._backend == "gpu" and self._gpu is not None:
+            try:
+                return self._gpu.search(self.canvas, n_random, n_mutate, max_size_frac, self.rng)
+            except Exception as exc:
+                # One-time graceful degrade — never crash a render over the GPU.
+                self._backend = "cpu"
+                self._gpu = None
+                self._gpu_fallback_reason = f"{type(exc).__name__}: {exc}"
+        return self._parallel_search(types, n_random, n_mutate, max_size_frac)
 
     def run(self) -> Iterable[EngineEvent]:
         p = self.profile
@@ -388,6 +475,12 @@ class Engine:
         # types are enabled.
         type_cursor = 0
         save_at = set(p.save_at)
+        # Tell the GUI which backend actually ran (status bar). `self._backend`
+        # is the resolved/effective backend after any GPU build attempt.
+        from fd6.shapegen import gpu as _gpu
+        self._gpu_fallback_reason = ""
+        self._backend_announced = self._backend
+        yield EngineEvent(kind="backend", message=_gpu.backend_label(self._backend))
         try:
             consecutive_skips = 0
             MAX_CONSECUTIVE_SKIPS = 80
@@ -401,10 +494,17 @@ class Engine:
                 progress = len(self.shapes) / max(1, p.stop_at)
                 size_cap = self._max_size_frac_for_progress(progress)
 
-                refined_score, refined = self._parallel_search(
+                refined_score, refined = self._search(
                     iter_types, max(1, p.random_samples), max(1, p.mutated_samples),
                     max_size_frac=size_cap,
                 )
+                # If the GPU degraded to CPU mid-run, announce the new backend once.
+                if self._backend != self._backend_announced:
+                    self._backend_announced = self._backend
+                    note = _gpu.backend_label(self._backend)
+                    if self._gpu_fallback_reason:
+                        note += " (GPU unavailable mid-run, switched to CPU)"
+                    yield EngineEvent(kind="backend", message=note)
 
                 # Sticker mode: refined must fit essentially entirely inside
                 # the opaque region. If it doesn't, retry up to 5 times then
@@ -414,7 +514,7 @@ class Engine:
                     while sticker_attempts < 5:
                         if refined is not None and refined_score != float("inf"):
                             break
-                        refined_score, refined = self._parallel_search(
+                        refined_score, refined = self._search(
                             iter_types, max(1, p.random_samples), max(1, p.mutated_samples),
                             max_size_frac=size_cap,
                         )
@@ -465,6 +565,9 @@ class Engine:
                     yield EngineEvent(kind="checkpoint", shape_count=count, rms=self.rms)
 
             yield EngineEvent(kind="done", shape_count=len(self.shapes), rms=self.rms, canvas=self._preview_canvas())
+        except EngineWorkerError as exc:
+            # Already a user-facing, actionable message — show it as-is.
+            yield EngineEvent(kind="error", message=str(exc))
         except Exception as exc:
             yield EngineEvent(kind="error", message=f"{type(exc).__name__}: {exc}")
         finally:

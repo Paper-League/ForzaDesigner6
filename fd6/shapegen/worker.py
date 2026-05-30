@@ -19,6 +19,7 @@ class GenerationWorker(QObject):
     finished = Signal(str)              # final json output path
     error = Signal(str)
     checkpoint_written = Signal(str)    # checkpoint json path
+    backend_ready = Signal(str)         # compute backend label ("GPU (CUDA)" / "CPU")
 
     def __init__(self, image_path: Path, profile: Profile, output_dir: Path | None = None, sticker_mode: bool = False) -> None:
         super().__init__()
@@ -121,6 +122,8 @@ class GenerationWorker(QObject):
             for event in self._engine.run():
                 if event.kind == "shape_committed":
                     self.progress.emit(event.shape_count, self.profile.stop_at, event.rms)
+                elif event.kind == "backend":
+                    self.backend_ready.emit(event.message)
                 elif event.kind == "preview" and event.canvas is not None:
                     self.preview.emit(event.canvas)
                 elif event.kind == "checkpoint":

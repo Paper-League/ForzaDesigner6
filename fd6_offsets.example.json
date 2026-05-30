@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "COPY this file to '.fd6_offsets.json' (leading dot) next to FD6MultiSupport.exe",
+    "or in the folder you launch FD6 from, then edit the values below.",
+    "It lets you correct the Forza memory offsets for a NEW game build WITHOUT",
+    "rebuilding the app. FD6 loads it automatically when you click Inject.",
+    "",
+    "All keys are optional — include only the ones you need to override. Offsets",
+    "accept decimal (90), 0x-prefixed hex ('0x5A'), or bare hex ('5A').",
+    "",
+    "Keys can be flat (apply to whatever target you inject into) or scoped per",
+    "game key ('fh6', 'fh5', 'fh4', 'fh3') as shown below.",
+    "",
+    "How to find new offsets: open FH6's vinyl editor with a fresh sphere",
+    "template, then run  python -m fd6.inject  and use find-pid / scan-float /",
+    "narrow / dump / walk to locate the LiveryGroup + Layer fields. The numbers",
+    "below are the build 354.221 / 364.933 defaults — change only what shifted."
+  ],
+  "fh6": {
+    "livery_count_offset": "0x5A",
+    "layer_table_offset": "0x78",
+    "layer_position_offset": "0x18",
+    "layer_scale_offset": "0x28",
+    "layer_rotation_offset": "0x50",
+    "layer_color_offset": "0x74",
+    "layer_mask_offset": "0x78",
+    "layer_shape_id_offset": "0x7A",
+    "scale_divisor_ellipse": 63.0,
+    "scale_divisor_other": 127.0,
+    "shape_id_ellipse": 102,
+    "shape_id_other": 101
+  }
+}

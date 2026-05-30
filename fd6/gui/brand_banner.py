@@ -25,6 +25,7 @@ SUBSCRIBE_URL = "https://www.youtube.com/@DaMostPalone?sub_confirmation=1"
 DISCORD_INVITE_URL = "https://discord.gg/PJFWdykGmS"
 JBA_URL = "https://tokyubevoxelverse.github.io/gbajs4/"
 RADIO_MAKER_URL = "https://github.com/tokyubevoxelverse/ForzaDesignerRadioMaker/releases/tag/0.0.1-Alpha"
+NOMANS_MOVIES_URL = "https://github.com/tokyubevoxelverse/NoMansMovies"
 
 
 def _bundle_root() -> Path:
@@ -64,15 +65,16 @@ class BrandBanner(QWidget):
     """Brand banner that sits in the bottom-left corner. Click panel to collapse / click pill to expand."""
 
     MARGIN = 12
-    # Height accommodates five CTA buttons stacked above the icon/title row:
-    #   row 1: tokyube.com (rainbow)
-    #   row 2: JBA Online GameBoy Emulator (tan -> brown)
-    #   row 3: Forza Designer Radio Maker (neon purple)
-    #   row 4: Tutorial / Trailer (YouTube red)
-    #   row 5: Join the Imagineers (Discord orange)
-    #   row 6: icon + Forza Designer 6 title
-    BANNER_HEIGHT = 256
-    BANNER_WIDTH = 260
+    # Height accommodates six CTA buttons stacked above the icon/title row:
+    #   row 1: NoMansMovies — Watch Movies in ANY Windows Game! (forest->lime->yellow)
+    #   row 2: tokyube.com (rainbow)
+    #   row 3: JBA Online GameBoy Emulator (tan -> brown)
+    #   row 4: Forza Designer Radio Maker (neon purple)
+    #   row 5: Tutorial / Trailer (YouTube red)
+    #   row 6: Join the Imagineers (Discord orange)
+    #   row 7: icon + Forza Designer 6 title
+    BANNER_HEIGHT = 294
+    BANNER_WIDTH = 290  # widened to fit the longest CTA ("Watch Movies in ANY Windows Game!")
     PILL_SIZE = 40
     CTA_HEIGHT = 30
 
@@ -109,7 +111,23 @@ class BrandBanner(QWidget):
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
 
-        # ── CTA 1: tokyube.com (rainbow gradient, white text) ────────────────
+        # ── CTA 1: NoMansMovies (forest -> lime -> yellow, black text/green outline) ──
+        self.movies_btn = QPushButton("🎬  Watch Movies in ANY Windows Game!", self.panel)
+        self.movies_btn.setCursor(Qt.PointingHandCursor)
+        self.movies_btn.setFixedHeight(self.CTA_HEIGHT)
+        self.movies_btn.setStyleSheet(
+            "QPushButton {"
+            " background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            "  stop:0 #0b6b1f, stop:0.5 #5dd62c, stop:1 #f7f700);"
+            " color: #000000; font-weight: bold; font-size: 11px;"
+            " border: 2px solid #0a5d1c; border-radius: 6px; padding: 0 6px; text-align: left; }"
+            "QPushButton:hover { border-color: #39ff14; }"
+        )
+        self.movies_btn.setToolTip(f"Watch movies inside any Windows game — NoMansMovies ({NOMANS_MOVIES_URL})")
+        self.movies_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(NOMANS_MOVIES_URL)))
+        outer.addWidget(self.movies_btn)
+
+        # ── CTA 2: tokyube.com (rainbow gradient, white text) ────────────────
         self.tokyube_btn = QPushButton("tokyube.com", self.panel)
         self.tokyube_btn.setCursor(Qt.PointingHandCursor)
         self.tokyube_btn.setFixedHeight(self.CTA_HEIGHT)

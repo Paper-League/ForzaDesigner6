@@ -44,13 +44,19 @@ from fd6.inject.win_process import ProcessHandle, find_process_id
 
 PATTERNS_FILE = DEFAULT_PATTERNS_PATH
 
-# Target FH6 build this injector's offsets are confirmed against. If the game
-# patches and breaks injection, this needs re-derivation. Surfaced in the GUI
-# (window title + About dialog) so users know which build the EXE matches.
-FH6_TARGET_BUILD = "354.221"
+# Build of FH6 this injector's offsets target. Forza Horizon 6 updated to
+# 364.933; the struct layout is often carried across minor patches (the RTTI
+# locator finds the group by C++ type regardless), but if an offset shifted you
+# can re-probe with `python -m fd6.inject` and drop the corrected values into a
+# `.fd6_offsets.json` next to the app — no rebuild needed (see _load_offset_overrides).
+# Surfaced in the GUI (window title + About dialog) so users know the target build.
+FH6_TARGET_BUILD = "364.933"
 
 
-# LiveryGroup struct offsets (CONFIRMED working for current FH6 build; may shift on patches)
+# LiveryGroup + Layer struct offsets. These are the runtime *effective* values:
+# they are seeded from game_profiles.GameProfile (the single source of truth) and
+# may be overridden per-attach from a local .fd6_offsets.json. The literals below
+# are just the last-known-good FH6 defaults so the module works if never seeded.
 COUNT_OFF = 0x5A   # u16 layer count
 TABLE_OFF = 0x78   # u64 pointer to layer table (array of u64 layer pointers, 8-byte stride)
 
@@ -67,6 +73,140 @@ SCALE_DIVISOR_ELLIPSE = 63.0
 SCALE_DIVISOR_OTHER = 127.0
 SHAPE_ID_ELLIPSE = 102
 SHAPE_ID_OTHER = 101
+
+
+# Offset field names shared by GameProfile and the .fd6_offsets.json override
+# file → the module global they drive. Keeping this map in one place makes the
+# profile the single source of truth and the override file self-documenting.
+_OFFSET_FIELDS: dict[str, str] = {
+    "livery_count_offset": "COUNT_OFF",
+    "layer_table_offset": "TABLE_OFF",
+    "layer_position_offset": "LAYER_POS_OFF",
+    "layer_scale_offset": "LAYER_SCALE_OFF",
+    "layer_rotation_offset": "LAYER_ROT_OFF",
+    "layer_color_offset": "LAYER_COLOR_OFF",
+    "layer_mask_offset": "LAYER_MASK_OFF",
+    "layer_shape_id_offset": "LAYER_SHAPE_ID_OFF",
+}
+_DIVISOR_FIELDS = ("scale_divisor_ellipse", "scale_divisor_other",
+                   "shape_id_ellipse", "shape_id_other")
+
+
+def _coerce_int(v) -> int | None:
+    """Accept 90, '0x5A', '90' (decimal) or bare hex like '5A' for an offset value.
+
+    Prefer Python's literal parsing (``int(s, 0)``: handles '0x..' and decimal);
+    fall back to base-16 so a bare-hex probe value like '5A' still works. Use the
+    '0x' prefix to be unambiguous — a bare '12' is read as decimal 12.
+    """
+    try:
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return v
+        s = str(v).strip()
+        try:
+            return int(s, 0)
+        except ValueError:
+            return int(s, 16)
+    except (TypeError, ValueError):
+        return None
+
+
+def _offset_override_paths() -> list[Path]:
+    """Candidate locations for a local .fd6_offsets.json (first existing wins)."""
+    cands: list[Path] = [Path.cwd() / ".fd6_offsets.json"]
+    try:
+        import sys
+        exe_dir = Path(sys.executable).resolve().parent
+        cands.append(exe_dir / ".fd6_offsets.json")
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            cands.append(Path(sys.argv[0]).resolve().parent / ".fd6_offsets.json")
+    except Exception:
+        pass
+    # De-dup while preserving order.
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in cands:
+        k = str(p)
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
+def _load_offset_overrides(profile_key: str) -> dict:
+    """Load offset/divisor overrides for `profile_key` from .fd6_offsets.json.
+
+    File shape (all keys optional). Either flat (applies to whatever target is
+    attached) or scoped per game key:
+
+        { "build": "364.933", "layer_color_offset": "0x74", ... }
+        { "fh6": { "layer_color_offset": "0x74" }, "fh5": { ... } }
+
+    Returns the effective override dict (possibly empty). Best-effort — any I/O
+    or parse error returns {} so injection still runs on the baked defaults.
+    """
+    for path in _offset_override_paths():
+        try:
+            if not path.exists():
+                continue
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        scoped = raw.get(profile_key)
+        return scoped if isinstance(scoped, dict) else raw
+    return {}
+
+
+def _effective_profile(profile: GameProfile) -> tuple[GameProfile, dict]:
+    """Return (profile-with-overrides-applied, applied_overrides).
+
+    Overrides come from .fd6_offsets.json and win over the profile's baked
+    defaults. This is what lets a live-probed offset fix the injector without a
+    rebuild. Also seeds the module-level offset globals used by the scan/score
+    free functions.
+    """
+    import dataclasses
+    overrides = _load_offset_overrides(profile.key)
+    changes: dict = {}
+    applied: dict = {}
+    for field in _OFFSET_FIELDS:
+        if field in overrides:
+            iv = _coerce_int(overrides[field])
+            if iv is not None:
+                changes[field] = iv
+                applied[field] = iv
+    for field in _DIVISOR_FIELDS:
+        if field in overrides:
+            try:
+                val = float(overrides[field]) if "divisor" in field else int(overrides[field])
+            except (TypeError, ValueError):
+                continue
+            changes[field] = val
+            applied[field] = val
+    eff = dataclasses.replace(profile, **changes) if changes else profile
+    _seed_module_offsets(eff)
+    return eff, applied
+
+
+def _seed_module_offsets(profile: GameProfile) -> None:
+    """Point the module-level offset/divisor globals at `profile`'s values.
+
+    The heap-scan / layer-score free functions (locate_livery_group,
+    _score_layer, _loose_validate_layer) read these globals, so seeding them
+    from the active (possibly overridden) profile keeps every code path on one
+    set of offsets.
+    """
+    g = globals()
+    for field, gname in _OFFSET_FIELDS.items():
+        g[gname] = getattr(profile, field)
+    g["SCALE_DIVISOR_ELLIPSE"] = profile.scale_divisor_ellipse
+    g["SCALE_DIVISOR_OTHER"] = profile.scale_divisor_other
+    g["SHAPE_ID_ELLIPSE"] = profile.shape_id_ellipse
+    g["SHAPE_ID_OTHER"] = profile.shape_id_other
 
 # Sphere-fingerprint full-table acceptance threshold. After 16/16 strict
 # layer sampling passes, we read the entire table and check what fraction of
@@ -125,6 +265,66 @@ def _get_module_base(pid: int, module_name: str) -> int | None:
         return None
     finally:
         k32.CloseHandle(h)
+
+
+def _read_game_build(pid: int, process_names: tuple[str, ...]) -> str | None:
+    """Best-effort: read the running game exe's FileVersion (e.g. '364.933').
+
+    Returns None on any failure — purely informational (shown in the inject
+    result so users can see whether the attached build matches FH6_TARGET_BUILD).
+    """
+    try:
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ver = ctypes.WinDLL("version", use_last_error=True)
+        PROCESS_QUERY_INFORMATION = 0x0400
+        PROCESS_VM_READ = 0x0010
+        h = k32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+        if not h:
+            return None
+        try:
+            psapi.GetModuleFileNameExW.argtypes = [
+                wintypes.HANDLE, ctypes.c_void_p, wintypes.LPWSTR, wintypes.DWORD]
+            psapi.GetModuleFileNameExW.restype = wintypes.DWORD
+            buf = ctypes.create_unicode_buffer(1024)
+            if not psapi.GetModuleFileNameExW(h, None, buf, 1024):
+                return None
+            exe_path = buf.value
+        finally:
+            k32.CloseHandle(h)
+        if not exe_path:
+            return None
+        size = ver.GetFileVersionInfoSizeW(exe_path, None)
+        if not size:
+            return None
+        data = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(exe_path, 0, size, data):
+            return None
+        block = ctypes.c_void_p()
+        blen = wintypes.UINT()
+        if not ver.VerQueryValueW(data, "\\", ctypes.byref(block), ctypes.byref(blen)):
+            return None
+
+        class VS_FIXEDFILEINFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSignature", wintypes.DWORD), ("dwStrucVersion", wintypes.DWORD),
+                ("dwFileVersionMS", wintypes.DWORD), ("dwFileVersionLS", wintypes.DWORD),
+                ("dwProductVersionMS", wintypes.DWORD), ("dwProductVersionLS", wintypes.DWORD),
+                ("dwFileFlagsMask", wintypes.DWORD), ("dwFileFlags", wintypes.DWORD),
+                ("dwFileOS", wintypes.DWORD), ("dwFileType", wintypes.DWORD),
+                ("dwFileSubtype", wintypes.DWORD), ("dwFileDateMS", wintypes.DWORD),
+                ("dwFileDateLS", wintypes.DWORD),
+            ]
+        ffi = ctypes.cast(block, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+        ms, ls = ffi.dwFileVersionMS, ffi.dwFileVersionLS
+        parts = (ms >> 16 & 0xFFFF, ms & 0xFFFF, ls >> 16 & 0xFFFF, ls & 0xFFFF)
+        # Trim trailing zero components for a clean "major.minor" style string.
+        trimmed = list(parts)
+        while len(trimmed) > 2 and trimmed[-1] == 0:
+            trimmed.pop()
+        return ".".join(str(p) for p in trimmed)
+    except Exception:
+        return None
 
 
 def _is_user_ptr(val: int) -> bool:
@@ -349,11 +549,17 @@ class FH6Injector(Injector):
                  profile: GameProfile | None = None) -> None:
         self.pid = pid
         self.patterns_path = Path(patterns_path)
-        self.profile: GameProfile = profile or default_profile()
+        base_profile = profile or default_profile()
+        # Apply any local .fd6_offsets.json overrides over the profile defaults
+        # and seed the module-level offset globals from the result. This is the
+        # single-source-of-truth + live-override path: GameProfile defaults, then
+        # user-probed corrections, no rebuild required.
+        self.profile, self.offset_overrides = _effective_profile(base_profile)
         self._proc: ProcessHandle | None = None
         self._group_addr: int | None = None
         self._table_addr: int | None = None
         self._layer_count: int | None = None
+        self.detected_build: str | None = None  # filled in on attach (best-effort)
 
     @property
     def game_label(self) -> str:
@@ -377,6 +583,30 @@ class FH6Injector(Injector):
                 )
         self._proc = ProcessHandle(self.pid)
         self._proc.open()
+        # Best-effort: record the attached game's build so the result dialog can
+        # flag a mismatch with the build these offsets were validated against.
+        try:
+            self.detected_build = _read_game_build(self.pid, self.profile.process_names)
+        except Exception:
+            self.detected_build = None
+
+    def build_status(self) -> str:
+        """Human-readable build/offset status for the inject result dialog."""
+        target = FH6_TARGET_BUILD if self.profile.key == "fh6" else "(profile defaults)"
+        parts = [f"Offsets target build {target}."]
+        if self.detected_build:
+            parts.append(f"Attached game build: {self.detected_build}.")
+            if self.profile.key == "fh6" and self.detected_build != FH6_TARGET_BUILD:
+                parts.append(
+                    "Build differs from the validated target — if shapes land wrong "
+                    "or nothing appears, the struct offsets may have shifted. Re-probe "
+                    "with `python -m fd6.inject` and drop corrected values into "
+                    ".fd6_offsets.json (no rebuild needed)."
+                )
+        if self.offset_overrides:
+            keys = ", ".join(sorted(self.offset_overrides))
+            parts.append(f"Applied local offset overrides: {keys}.")
+        return " ".join(parts)
 
     def detach(self) -> None:
         if self._proc:
@@ -539,7 +769,7 @@ class FH6Injector(Injector):
             "This is intentional — refusing to write to a low-confidence candidate would "
             "corrupt FH6 state. Make sure the vinyl editor is open with a fresh, unmodified "
             "template (500/1500/3000 spheres). If you've already edited the template's "
-            "shapes/colors, reload it fresh and re-inject."
+            "shapes/colors, reload it fresh and re-inject.\n\n" + self.build_status()
         )
 
     def inject(self, shapes: list, group: VinylGroupHandle, progress_cb=None,
@@ -656,6 +886,13 @@ class FH6Injector(Injector):
             msg += f" Type mix written — {mix}."
         if skipped:
             msg += f" Skipped {skipped} unsafe layer(s) (failed revalidation)."
+            if skipped >= max(1, n // 2):
+                msg += (
+                    " A high skip count usually means the layer-struct offsets "
+                    "shifted in this game build — re-probe and set them in "
+                    ".fd6_offsets.json."
+                )
+        msg += " " + self.build_status()
         return InjectResult(
             success=written > 0,
             shapes_written=written,

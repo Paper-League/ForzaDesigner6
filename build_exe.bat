@@ -63,6 +63,7 @@ pyinstaller ^
     --hidden-import fd6.gui.brand_banner ^
     --hidden-import fd6.gui.themes ^
     --hidden-import fd6.shapegen.render ^
+    --hidden-import fd6.shapegen.gpu ^
     --hidden-import PySide6.QtMultimedia ^
     --hidden-import PySide6.QtMultimediaWidgets ^
     -p . ^

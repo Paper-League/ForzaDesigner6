@@ -555,24 +555,28 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Forza Designer 6+",
-            f"<b>Forza Designer 6+</b><br>v0.4.0<br>"
+            f"<b>Forza Designer 6+</b><br>v0.4.5<br>"
             f"<i>For Forza Horizon 3 / 4 / 5 / 6 (FH6 build {FH6_TARGET_BUILD}) "
             f"and Assetto Corsa Competizione</i><br><br>"
             "Multi-game livery suite. Forza titles: live memory injection of "
             "vinyl-group shapes (position, scale, rotation, color). Assetto "
             "Corsa Competizione: file-based PNG livery export to the user's "
             "Documents folder.<br><br>"
-            "v0.4.0 highlights: Assetto Corsa Competizione livery export, "
-            "multi-game suite picker, expanded Forza target list "
-            "(FH3 / FH4 / FH5 / FH6), 2 GiB memory-region read fix, "
-            "transparent edge-buffer padding on all generations, JBA Online "
-            "GameBoy Emulator banner CTA, and a per-type diagnostic line in "
-            "the injection result dialog.<br><br>"
+            "v0.4.5 highlights: <b>CPU / GPU compute toggle</b> (Auto / CPU / "
+            "GPU&nbsp;NVIDIA&nbsp;CUDA, with automatic CPU fallback); fixed a "
+            "startup crash on UTF-16 ACC livery files; generation no longer dies "
+            "with a cryptic error when a worker runs out of memory (clear, "
+            "actionable message + the run continues on surviving workers); "
+            f"updated FH6 injection target to build {FH6_TARGET_BUILD}; and "
+            "live-overridable memory offsets via a local "
+            "<code>.fd6_offsets.json</code> (re-probe a new build without a "
+            "rebuild).<br><br>"
             "Inspired by forza-painter (the_adawg), built on the techniques of "
             "geometrize-lib (Sam Twidale) and Primitive (Michael Fogleman). "
             "LiveryGroup discovery approach adapted from bvzrays/forza-painter-fh6.<br><br>"
-            "If FH6 patches and injection breaks, the LiveryGroup offsets in "
-            "<code>fd6/inject/fh6_injector.py</code> need to be re-derived for the new build."
+            "If FH6 patches and injection breaks, re-probe with "
+            "<code>python -m fd6.inject</code> and drop the corrected LiveryGroup "
+            "offsets into <code>.fd6_offsets.json</code> next to the app (no rebuild needed)."
         )
 
     def _refresh_inject_button(self) -> None:
@@ -668,6 +672,7 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self.preview.on_progress)
         self._worker.preview.connect(self.preview.on_preview)
         self._worker.checkpoint_written.connect(lambda p: self.statusBar().showMessage(f"Checkpoint: {p}", 4000))
+        self._worker.backend_ready.connect(lambda label: self.statusBar().showMessage(f"Compute: {label}", 8000))
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._thread.start()

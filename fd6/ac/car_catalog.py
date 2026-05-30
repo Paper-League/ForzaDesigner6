@@ -97,11 +97,45 @@ ACC_BAKED_CATALOG: tuple[CarEntry, ...] = (
 )
 
 
+def _read_json_tolerant(path: Path) -> dict | None:
+    """Best-effort JSON read that tolerates UTF-8 / UTF-8-BOM / UTF-16 files.
+
+    ACC writes some decals.json files as UTF-16 (BOM bytes ``FF FE`` / ``FE FF``).
+    A plain ``read_text(encoding="utf-8")`` raises ``UnicodeDecodeError`` on the
+    leading ``0xFF`` byte — and because ``UnicodeDecodeError`` is a ``ValueError``
+    (not ``OSError``/``JSONDecodeError``) it slipped past the old handler and
+    crashed the whole app at launch. We sniff the BOM to pick an encoding, then
+    fall back through the other codecs, and finally a lossy decode so a single
+    stray byte can never sink discovery. Returns ``None`` on any failure.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        primary = "utf-16"          # BOM encodes endianness; the utf-16 codec auto-detects it
+    elif raw[:3] == b"\xef\xbb\xbf":
+        primary = "utf-8-sig"
+    else:
+        primary = "utf-8"
+    for enc in (primary, "utf-16", "utf-8"):
+        try:
+            parsed = json.loads(raw.decode(enc))
+        except (UnicodeDecodeError, LookupError, json.JSONDecodeError):
+            continue
+        return parsed if isinstance(parsed, dict) else None
+    try:
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _user_discovered_cars(profile: ACTitleProfile) -> list[CarEntry]:
     """Walk the user's existing liveries and extract any carModel strings found.
 
     Returns entries with source='user' so callers can dedupe vs. baked.
-    Falls back silently to empty on any I/O or JSON error — auto-discovery
+    Falls back silently to empty on any I/O or decode/JSON error — auto-discovery
     is best-effort, never blocks the dropdown from populating.
     """
     root = livery_root(profile)
@@ -115,9 +149,8 @@ def _user_discovered_cars(profile: ACTitleProfile) -> list[CarEntry]:
             decals_json = team_dir / "decals.json"
             if not decals_json.exists():
                 continue
-            try:
-                data = json.loads(decals_json.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            data = _read_json_tolerant(decals_json)
+            if data is None:
                 continue
             car_model = str(data.get("carModel", "")).strip()
             if not car_model or car_model in found:
@@ -128,8 +161,10 @@ def _user_discovered_cars(profile: ACTitleProfile) -> list[CarEntry]:
                 category="User-discovered",
                 source="user",
             )
-    except OSError:
-        return []
+    except Exception:
+        # Discovery is best-effort: a malformed livery folder must never block
+        # the dropdown (or, as before, crash the app during MainWindow init).
+        return list(found.values())
     return list(found.values())
 
 

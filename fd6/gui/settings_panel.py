@@ -20,6 +20,13 @@ SHAPE_TYPE_CHOICES = [
     ("triangle", "Triangle (coming soon)"),
 ]
 
+# Compute backend choices for the shape search. GPU uses CuPy (NVIDIA CUDA).
+COMPUTE_BACKEND_CHOICES = [
+    ("auto", "Auto (GPU if available)"),
+    ("cpu", "CPU"),
+    ("gpu", "GPU (NVIDIA CUDA)"),
+]
+
 
 class SettingsPanel(QWidget):
     """Profile picker + advanced knobs. Emits profile_changed when the user edits anything."""
@@ -52,6 +59,40 @@ class SettingsPanel(QWidget):
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         prof_row.addWidget(self.profile_combo, stretch=1)
         layout.addLayout(prof_row)
+
+        # Compute backend picker (chosen before generation). GPU = CuPy/CUDA.
+        compute_row = QHBoxLayout()
+        compute_label = QLabel("Compute:")
+        from fd6.shapegen.gpu import gpu_available
+        self._gpu_available = bool(gpu_available())
+        compute_tip = (
+            "Which processor runs the shape search.\n\n"
+            "Auto (recommended): use an NVIDIA GPU if one is detected, otherwise CPU.\n"
+            "CPU: always use the multi-core CPU path (works on every machine).\n"
+            "GPU (NVIDIA CUDA): force the GPU path — needs an NVIDIA card with CUDA "
+            "+ the CuPy package. If a GPU isn't available it safely falls back to CPU.\n\n"
+            "GPU acceleration currently applies to the default Rotated Ellipse shape."
+        )
+        if not self._gpu_available:
+            compute_tip += "\n\nNo NVIDIA CUDA GPU detected on this machine — runs on CPU."
+        compute_label.setToolTip(compute_tip)
+        compute_row.addWidget(compute_label)
+        self.compute_backend = QComboBox(self)
+        for code, label in COMPUTE_BACKEND_CHOICES:
+            self.compute_backend.addItem(label, code)
+            if code == "gpu" and not self._gpu_available:
+                # Keep the option visible (so users know it exists) but disabled.
+                idx = self.compute_backend.count() - 1
+                model = self.compute_backend.model()
+                item = model.item(idx)
+                if item is not None:
+                    item.setEnabled(False)
+                self.compute_backend.setItemText(idx, "GPU (NVIDIA CUDA — not detected)")
+        self.compute_backend.setCurrentIndex(0)  # Auto
+        self.compute_backend.setToolTip(compute_tip)
+        self.compute_backend.currentIndexChanged.connect(self._on_adv_changed)
+        compute_row.addWidget(self.compute_backend, stretch=1)
+        layout.addLayout(compute_row)
 
         # Advanced group — every spinbox gets a plain-language tooltip so
         # non-technical users can hover and know what each number does.
@@ -298,6 +339,16 @@ class SettingsPanel(QWidget):
             else:
                 cb.setChecked(False)
             cb.blockSignals(False)
+        # Sync the compute backend from the profile, but never select a disabled
+        # GPU option on a machine without a CUDA device.
+        want = getattr(prof, "compute_backend", "auto")
+        if want == "gpu" and not getattr(self, "_gpu_available", False):
+            want = "auto"
+        ci = self.compute_backend.findData(want)
+        if ci >= 0:
+            self.compute_backend.blockSignals(True)
+            self.compute_backend.setCurrentIndex(ci)
+            self.compute_backend.blockSignals(False)
         self.profile_changed.emit(self.build_profile())
 
     def _on_adv_changed(self, *_args) -> None:
@@ -319,6 +370,7 @@ class SettingsPanel(QWidget):
         base.max_threads = self.max_threads.value()
         base.preview_every = self.preview_every.value()
         base.shape_types = [code for code, cb in self._shape_checks.items() if cb.isChecked()] or ["rotated_ellipse"]
+        base.compute_backend = str(self.compute_backend.currentData() or "auto")
         return base
 
     def set_running(self, running: bool) -> None:
