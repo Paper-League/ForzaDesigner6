@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget, QSplitter
+    QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget, QSplitter, QSizePolicy
 )
 
 from fd6.gui.widgets import ImageView
@@ -27,6 +27,14 @@ class PreviewPanel(QWidget):
         info_row = QHBoxLayout()
         self.status_label = QLabel("Idle.", self)
         self.status_label.setStyleSheet("color: #aaa;")
+        # The status text is set to long sentences on every generation start. A
+        # plain QLabel reports that full text width/height as its sizeHint, which
+        # pushed the whole window bigger on each new preview (the bottom dipped
+        # off-screen; toggling fullscreen forced a relayout that "fixed" it).
+        # Keep it a SINGLE line (constant height) and Ignore its width so it can
+        # never dictate the window size — it just fills the row it's given and
+        # elides if the text is too long.
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.progress = QProgressBar(self)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)

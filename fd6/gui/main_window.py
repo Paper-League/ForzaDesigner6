@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QHBoxLayout, QMainWindow, QMessageBox, QSplitter, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
+    QHBoxLayout, QMainWindow, QMessageBox, QScrollArea, QSplitter, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
 )
 
 from fd6.gui.ac_settings_panel import ACSettingsPanel
@@ -48,9 +48,14 @@ class MainWindow(QMainWindow):
         self.preview_stack = QStackedWidget(self)
         self.preview_stack.addWidget(self.preview)     # index 0 — Forza
         self.preview_stack.addWidget(self.ac_preview)  # index 1 — AC
+        # Wrap each settings page in a scroll area. The panels are tall (the AC
+        # panel is ~880px); without scrolling, the QStackedWidget takes the
+        # height of its TALLEST page as a hard minimum, forcing the whole window
+        # taller than the screen (bottom clipped off). Scroll areas let the
+        # window be shorter than the panel and scroll instead.
         self.settings_stack = QStackedWidget(self)
-        self.settings_stack.addWidget(self.settings_panel)   # index 0 — Forza
-        self.settings_stack.addWidget(self.ac_settings)      # index 1 — AC
+        self.settings_stack.addWidget(self._scrollable(self.settings_panel))  # index 0 — Forza
+        self.settings_stack.addWidget(self._scrollable(self.ac_settings))     # index 1 — AC
 
         # Layout: [upload | center (preview-stack over queue) | settings-stack]
         center = QWidget(self)
@@ -63,7 +68,7 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(vsplit)
 
         hsplit = QSplitter(Qt.Horizontal, self)
-        hsplit.addWidget(self.upload)
+        hsplit.addWidget(self._scrollable(self.upload))
         hsplit.addWidget(center)
         hsplit.addWidget(self.settings_stack)
         hsplit.setSizes([240, 760, 280])
@@ -73,6 +78,7 @@ class MainWindow(QMainWindow):
         self.upload.files_selected.connect(self._on_files_selected)
         self.upload.json_loaded.connect(self._on_json_loaded_for_preview)
         self.upload.download_json_requested.connect(self._on_download_json)
+        self.queue.download_requested.connect(self._on_queue_download_json)
         self.settings_panel.start_clicked.connect(self._start_next)
         self.settings_panel.pause_clicked.connect(self._toggle_pause)
         self.settings_panel.stop_clicked.connect(self._stop_current)
@@ -84,6 +90,7 @@ class MainWindow(QMainWindow):
         self._worker: GenerationWorker | None = None
         self._thread: QThread | None = None
         self._current_path: Path | None = None
+        self._current_uid: int | None = None  # queue entry uid currently generating
         self._current_profile: Profile | None = None
         self._last_finished_json: Path | None = None  # tracks most recent completed run for Download button
         self._loaded_json_path: Path | None = None    # JSON loaded via Upload JSON (ready to inject)
@@ -173,6 +180,17 @@ class MainWindow(QMainWindow):
         # We just trigger the saved theme here in case MainWindow is constructed before app-level apply.
         from PySide6.QtWidgets import QApplication
         apply_theme(QApplication.instance(), saved_theme_name())
+
+    def _scrollable(self, widget: QWidget) -> QScrollArea:
+        """Wrap `widget` in a vertical scroll area so a tall panel never forces
+        the window taller than the screen. Width tracks the viewport (no
+        horizontal scrollbar); only the vertical bar appears when needed."""
+        sa = QScrollArea(self)
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QScrollArea.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setWidget(widget)
+        return sa
 
     def _build_menus(self) -> None:
         mbar = self.menuBar()
@@ -555,34 +573,23 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Forza Designer 6+",
-            f"<b>Forza Designer 6+</b><br>v0.4.7 (hotfix)<br>"
+            f"<b>Forza Designer 6+</b><br>v0.5.0<br>"
             f"<i>For Forza Horizon 3 / 4 / 5 / 6 (FH6 build {FH6_TARGET_BUILD}) "
             f"and Assetto Corsa Competizione</i><br><br>"
             "Multi-game livery suite. Forza titles: live memory injection of "
             "vinyl-group shapes (position, scale, rotation, color). Assetto "
             "Corsa Competizione: file-based PNG livery export to the user's "
             "Documents folder.<br><br>"
-            "v0.4.7 hotfix: <b>injection now tries the fast sphere/circle scan at "
-            "EVERY template size before any slow fallback</b> — fixes injecting a "
-            "20-shape or 3000-shape JSON onto a 500/1500/3000 template (previously "
-            "only 1500 reliably worked; other counts dropped into a multi-minute "
-            "RTTI scan first). The slow RTTI vtable scan now runs only if every "
-            "fast size misses.<br><br>"
-            "v0.4.6 hotfix: <b>cross-vendor GPU support</b> — the GPU option now "
-            "uses <b>OpenCL</b> and works on <b>NVIDIA, AMD, and Intel</b> GPUs "
-            "via your graphics driver (previously it required NVIDIA CUDA and was "
-            "never actually enabled). To keep the app lean, the small GPU runtime "
-            "is downloaded once on first GPU use; if no GPU is usable it falls "
-            "back to CPU automatically.<br><br>"
-            "v0.4.5 highlights: CPU / GPU compute toggle (Auto / CPU / GPU, with "
-            "automatic CPU fallback); fixed a "
-            "startup crash on UTF-16 ACC livery files; generation no longer dies "
-            "with a cryptic error when a worker runs out of memory (clear, "
-            "actionable message + the run continues on surviving workers); "
-            f"updated FH6 injection target to build {FH6_TARGET_BUILD}; and "
-            "live-overridable memory offsets via a local "
-            "<code>.fd6_offsets.json</code> (re-probe a new build without a "
-            "rebuild).<br><br>"
+            "<b>What's new in v0.5.0:</b><br>"
+            "• Fixed the generation-queue infinite loop that happened when the "
+            "same image was queued more than once — each entry now runs exactly once.<br>"
+            "• Fixed the window growing too big / its bottom running off-screen "
+            "when a new queued preview started (previewed image + status text no "
+            "longer inflate the window; the side panels now scroll instead of "
+            "forcing a minimum window height taller than the screen).<br>"
+            "• Queue improvements: every finished item gets its own "
+            "<b>Download JSON</b> button so you can save each image's result "
+            "individually (the top button still saves the currently-previewed one).<br><br>"
             "Inspired by forza-painter (the_adawg), built on the techniques of "
             "geometrize-lib (Sam Twidale) and Primitive (Michael Fogleman). "
             "LiveryGroup discovery approach adapted from bvzrays/forza-painter-fh6.<br><br>"
@@ -663,15 +670,17 @@ class MainWindow(QMainWindow):
     def _start_next(self) -> None:
         if self._worker is not None:
             return  # already running
-        next_path = self.queue.pop_next_queued()
-        if next_path is None:
+        nxt = self.queue.pop_next_queued()
+        if nxt is None:
             self.statusBar().showMessage("Nothing queued.")
             return
+        next_uid, next_path = nxt
         profile = self.settings_panel.build_profile()
         self._current_path = next_path
+        self._current_uid = next_uid
         self._current_profile = profile
         self.preview.set_source(next_path)
-        self.queue.set_status(next_path, "running")
+        self.queue.set_status(next_uid, "running")
 
         # Pull sticker-mode (transparent-background) toggle from settings panel.
         # When ON (default), we composite transparent areas onto white before generation.
@@ -692,8 +701,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Generating: {next_path.name}")
 
     def _on_finished(self, out_path: str) -> None:
-        if self._current_path:
-            self.queue.set_status(self._current_path, "done")
+        if self._current_uid is not None:
+            # Record the JSON on this queue entry BEFORE marking done, so the
+            # row's Download JSON button (shown on "done") has a file to save.
+            self.queue.set_json_path(self._current_uid, Path(out_path))
+            self.queue.set_status(self._current_uid, "done")
         self._last_finished_json = Path(out_path)
         self.statusBar().showMessage(f"Saved: {out_path}", 8000)
         # Visual cue: green-pulse the Download JSON button so the user knows it's ready
@@ -703,8 +715,8 @@ class MainWindow(QMainWindow):
         self._start_next()
 
     def _on_error(self, msg: str) -> None:
-        if self._current_path:
-            self.queue.set_status(self._current_path, "error")
+        if self._current_uid is not None:
+            self.queue.set_status(self._current_uid, "error")
         QMessageBox.critical(self, "Generation error", msg)
         self._teardown_thread()
 
@@ -715,6 +727,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._thread = None
         self._current_path = None
+        self._current_uid = None
         self.settings_panel.set_running(False)
         self.settings_panel.pause_btn.setChecked(False)
 
@@ -880,22 +893,37 @@ class MainWindow(QMainWindow):
         self._inject_dialog = None
 
     def _on_download_json(self) -> None:
-        """Save (copy) the most-recent generated shapes JSON to a user-chosen location."""
-        from PySide6.QtWidgets import QFileDialog
-        import shutil
+        """Save (copy) the most-recent / currently-previewed shapes JSON."""
         if not self._last_finished_json or not self._last_finished_json.exists():
             QMessageBox.information(
                 self, "No JSON yet",
                 "No completed generation yet. Generate from an image first (or use Upload JSON to load an existing one)."
             )
             return
+        self._save_json_copy(self._last_finished_json)
+
+    def _on_queue_download_json(self, uid: int) -> None:
+        """Save a SPECIFIC finished queue item's JSON (per-row Download button)."""
+        json_path = self.queue.json_path_for(uid)
+        if not json_path or not Path(json_path).exists():
+            QMessageBox.information(
+                self, "No JSON for this item",
+                "This queue item hasn't finished generating, or its JSON is missing."
+            )
+            return
+        self._save_json_copy(Path(json_path))
+
+    def _save_json_copy(self, src: Path) -> None:
+        """Prompt for a destination and copy `src` there."""
+        from PySide6.QtWidgets import QFileDialog
+        import shutil
         dest, _ = QFileDialog.getSaveFileName(
-            self, "Save shapes JSON as…", self._last_finished_json.name, "FD6 shapes (*.json);;All files (*)"
+            self, "Save shapes JSON as…", src.name, "FD6 shapes (*.json);;All files (*)"
         )
         if not dest:
             return
         try:
-            shutil.copy2(str(self._last_finished_json), dest)
+            shutil.copy2(str(src), dest)
             self.statusBar().showMessage(f"Exported to {dest}", 6000)
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", f"{type(exc).__name__}: {exc}")

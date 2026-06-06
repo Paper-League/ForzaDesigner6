@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy
 
@@ -13,9 +13,20 @@ class ImageView(QLabel):
         super().__init__(placeholder, parent)
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(160, 120)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.setStyleSheet("QLabel { background: #181818; color: #555; border: 1px solid #2a2a2a; }")
         self._pix: QPixmap | None = None
+
+    # A QLabel's sizeHint is normally the pixmap's natural size, so loading a big
+    # source image made the hint balloon and grew the whole window on every queue
+    # start (minimize/restore "fixed" it by forcing a relayout). Pin the hints to
+    # the minimum and let _rescale fit the image into whatever space the layout
+    # gives us — the window size is now independent of the image dimensions.
+    def sizeHint(self) -> QSize:
+        return QSize(160, 120)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(160, 120)
 
     def set_numpy(self, arr: np.ndarray) -> None:
         """Display an HxWx3 (RGB) or HxWx4 (RGBA) numpy array.

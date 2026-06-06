@@ -37,8 +37,8 @@ Source build: Python 3.10+, `pip install -r requirements.txt`. Microsoft Visual 
 
 **Generate:**
 
-1. Launch `FD6.exe`. Click **Upload Image…** and pick a JPEG/PNG.
-2. Right panel: pick a **Profile** (`balanced` recommended) and **Stop at shapes** (1500 or 3000 typical).
+1. Launch `FD6.exe`. Click **Upload Image…** and pick a JPEG/PNG. You can queue several images at once — each generates in turn, and each finished row gets its own **Download JSON** button.
+2. Right panel: pick a **Profile** (`balanced` recommended) and **Stop at shapes** (1500 or 3000 typical). Optionally set **Compute** to **GPU** — FD6 uses cross-vendor OpenCL (NVIDIA / AMD / Intel via your graphics driver) and falls back to CPU automatically if no GPU is usable.
 3. Click **Start**. Watch the live preview rebuild your image. The JSON auto-saves next to your source image when done.
 
 **Inject:**
@@ -87,7 +87,7 @@ ACC export does not require ACC to be running and does not touch ACC's process m
 | "No confident match" error | Vinyl editor not open, or template doesn't have enough spheres for the JSON's shape count. Load a bigger template. |
 | Re-injection scan looks stalled | RTTI fallback phase can run silently for 2–5 min on a large game. The dialog resumes once a candidate is located. |
 | Shapes offset or wrong scale | File an issue with the JSON, the source image, and a screenshot of the in-game result. |
-| Game patched, all candidates rejected | The per-game struct offset may have shifted. Open an issue — the profile in `fd6/inject/game_profiles.py` needs updating. |
+| Game patched, all candidates rejected | The per-game struct offset may have shifted. You can re-probe with `python -m fd6.inject` and drop the corrected offsets into a local `.fd6_offsets.json` (see `fd6_offsets.example.json`) to fix it without rebuilding — or open an issue so the profile in `fd6/inject/game_profiles.py` can be updated. |
 
 ---
 

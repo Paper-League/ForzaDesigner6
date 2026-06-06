@@ -45,7 +45,8 @@ class UploadPanel(QWidget):
             "Click 'Inject into FH6' afterwards when you're ready to push it into the game."
         )
         self.upload_json_btn.clicked.connect(self._on_upload_json_clicked)
-        self.download_json_btn = QPushButton("Download JSON")
+        # Line break so the longer label fits inside the button without clipping.
+        self.download_json_btn = QPushButton("Download currently previewed\nJSON")
         self.download_json_btn.setEnabled(False)
         self.download_json_btn.setToolTip("No generated JSON yet — finish generating an image first")
         self.download_json_btn.clicked.connect(self.download_json_requested.emit)
