@@ -7,6 +7,8 @@ from fd6.gui.splash import maybe_show_splash
 
 
 def main() -> int:
+    from fd6.gui.startup_log import log, reset
+    reset(); log("main() start")
     app = QApplication(sys.argv)
     app.setApplicationName("Forza Designer 6")
     app.setOrganizationName("FD6")
@@ -26,15 +28,30 @@ def main() -> int:
     from fd6.gui.themes import apply_theme, saved_theme_name
     apply_theme(app, saved_theme_name())
 
+    log("constructing MainWindow")
     win = MainWindow()
+    log("MainWindow constructed")
 
     def show_main():
+        log("show_main()")
         win.show()
+        win.raise_()
+        win.activateWindow()
+        log("window shown")
         # Defer music start by one event-loop tick so any splash teardown
         # finishes first (two simultaneous QMediaPlayer streams during splash
         # close was crashing the app).
         from PySide6.QtCore import QTimer
         QTimer.singleShot(150, win.start_music)
+        # Deterministically run the post-splash startup flow (welcome panel /
+        # update check). Triggered here rather than in showEvent because the
+        # frozen --windowed build proved unreliable at firing it from showEvent.
+        def _safe_startup():
+            try:
+                win.run_startup_flow()
+            except Exception as exc:
+                log(f"run_startup_flow EXCEPTION: {type(exc).__name__}: {exc}")
+        QTimer.singleShot(350, _safe_startup)
 
     # Show splash if SplashScreen.mp4 is present, then open main window when video ends or user clicks/keypress.
     # If no splash file, show main window immediately.

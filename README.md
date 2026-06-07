@@ -33,6 +33,37 @@ Source build: Python 3.10+, `pip install -r requirements.txt`. Microsoft Visual 
 
 ---
 
+## Updates & Discord
+
+### Automatic updates
+FD6 can update itself. The auto-update prompt on launch is **opt-in via Discord**:
+
+1. On first launch (and after each new version) a **Welcome** panel offers
+   **Link Discord**, **Check for updates**, or **Skip**.
+2. **Link your Discord** (optional, PKCE OAuth — no bot, no password, no client
+   secret; it only reads your username and which servers you're in) and join the
+   [FD6 Discord server](https://discord.gg/PJFWdykGmS).
+3. If you're linked **and** a member of the FD6 server, FD6 checks GitHub on
+   launch and — when a newer release exists — shows
+   *"Update X available — install now?"*. Accepting downloads the new build,
+   swaps it in, and relaunches automatically.
+
+**Not linking is fine** — the app works fully without it. You just won't get the
+automatic prompt; you can always update from **Help → Check for updates** (that
+manual check is available to everyone, no Discord required). If you're offline
+the check simply reports it couldn't reach GitHub and the app keeps running.
+
+You can link / unlink any time from **Help → Discord & auto-updates**.
+
+### Discord Rich Presence (optional)
+Toggle **"Show \"Using Forza Designer 6\" on my Discord"** in
+**Help → Discord & auto-updates** to broadcast that you're using FD6 on your
+Discord profile while the app is open. It's off by default, runs entirely in the
+background (never blocks the app), and silently does nothing if Discord isn't
+running.
+
+---
+
 ## How to use
 
 **Generate:**

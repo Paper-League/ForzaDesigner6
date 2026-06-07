@@ -20,12 +20,12 @@ from PySide6.QtWidgets import (
 
 
 TOKYUBE_URL = "https://tokyube.com"
-TUTORIAL_URL = "https://youtu.be/8LGvE7O9aeg"
+TUTORIAL_URL = "https://www.youtube.com/watch?v=2EFykM8yaBU"
 SUBSCRIBE_URL = "https://www.youtube.com/@DaMostPalone?sub_confirmation=1"
 DISCORD_INVITE_URL = "https://discord.gg/PJFWdykGmS"
 JBA_URL = "https://tokyubevoxelverse.github.io/gbajs4/"
 RADIO_MAKER_URL = "https://github.com/tokyubevoxelverse/ForzaDesignerRadioMaker/releases/tag/0.0.1-Alpha"
-NOMANS_MOVIES_URL = "https://github.com/tokyubevoxelverse/NoMansMovies"
+NOMANS_MOVIES_URL = "https://github.com/tokyubevoxelverse/NoMansMovies/releases/tag/v0.2.2"
 
 
 def _bundle_root() -> Path:
@@ -112,7 +112,7 @@ class BrandBanner(QWidget):
         outer.setSpacing(6)
 
         # ── CTA 1: NoMansMovies (forest -> lime -> yellow, black text/green outline) ──
-        self.movies_btn = QPushButton("🎬  Watch Movies in ANY Windows Game!", self.panel)
+        self.movies_btn = QPushButton("🎬  NMM - Movies+YT w/ Friends in Forza", self.panel)
         self.movies_btn.setCursor(Qt.PointingHandCursor)
         self.movies_btn.setFixedHeight(self.CTA_HEIGHT)
         self.movies_btn.setStyleSheet(
@@ -123,7 +123,7 @@ class BrandBanner(QWidget):
             " border: 2px solid #0a5d1c; border-radius: 6px; padding: 0 6px; text-align: left; }"
             "QPushButton:hover { border-color: #39ff14; }"
         )
-        self.movies_btn.setToolTip(f"Watch movies inside any Windows game — NoMansMovies ({NOMANS_MOVIES_URL})")
+        self.movies_btn.setToolTip(f"NoMansMovies — watch movies + YouTube with friends, over Forza ({NOMANS_MOVIES_URL})")
         self.movies_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(NOMANS_MOVIES_URL)))
         outer.addWidget(self.movies_btn)
 
@@ -184,7 +184,7 @@ class BrandBanner(QWidget):
         outer.addWidget(self.radio_btn)
 
         # ── CTA 4: Tutorial / Trailer (YouTube red, white play glyph) ────────
-        self.tutorial_btn = QPushButton("▶  Tutorial / Trailer", self.panel)
+        self.tutorial_btn = QPushButton("▶  NEW Youtube Tutorial", self.panel)
         self.tutorial_btn.setCursor(Qt.PointingHandCursor)
         self.tutorial_btn.setFixedHeight(self.CTA_HEIGHT)
         self.tutorial_btn.setStyleSheet(
@@ -196,13 +196,13 @@ class BrandBanner(QWidget):
             "QPushButton:hover { border-color: #fff; }"
         )
         self.tutorial_btn.setToolTip(
-            "Watch the FD6 trailer (opens the video, plus a subscribe prompt in a second tab)"
+            "Watch the NEW FD6 YouTube tutorial (opens the video, plus a subscribe prompt in a second tab)"
         )
         self.tutorial_btn.clicked.connect(self._on_tutorial_clicked)
         outer.addWidget(self.tutorial_btn)
 
         # ── CTA 3: Join the Imagineers (matches site .btn-discord orange) ────
-        self.discord_btn = QPushButton("Join the Imagineers", self.panel)
+        self.discord_btn = QPushButton("Discord - help and gamers", self.panel)
         self.discord_btn.setCursor(Qt.PointingHandCursor)
         self.discord_btn.setFixedHeight(self.CTA_HEIGHT)
         self.discord_btn.setStyleSheet(

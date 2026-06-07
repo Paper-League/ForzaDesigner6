@@ -5,6 +5,10 @@ dist/
 *_log.txt
 fd6_build*_log.txt
 
+# Self-updater scratch (downloaded exe + swap script land in the OS temp dir,
+# but guard against any stray copy in the repo working tree)
+fd6_update.*
+
 # Python
 __pycache__/
 *.pyc

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import Qt, QThread, QObject, Signal, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QHBoxLayout, QMainWindow, QMessageBox, QScrollArea, QSplitter, QStackedWidget, QStatusBar, QVBoxLayout, QWidget
@@ -21,6 +21,24 @@ from fd6.shapegen.profile import Profile
 from fd6.shapegen.worker import GenerationWorker
 from fd6.inject.fh6_injector import patterns_are_populated, FH6_TARGET_BUILD
 from fd6.suite import SuiteMode, SUITE_DISPLAY, saved_suite_mode, save_suite_mode
+import fd6
+
+
+class _MembershipWorker(QObject):
+    """Background check: is the linked Discord user a member of the FD6 server?
+    Used to gate the automatic launch update-panel without stalling startup."""
+    result = Signal(bool)
+
+    def run(self) -> None:
+        from fd6.gui.startup_log import log as _log
+        _log("membership worker: start")
+        try:
+            from fd6.gui import discord_link
+            ok = discord_link.is_member_of_fd6_guild()
+        except Exception:
+            ok = False
+        _log(f"membership worker: done ({ok})")
+        self.result.emit(ok)
 
 
 class MainWindow(QMainWindow):
@@ -96,6 +114,19 @@ class MainWindow(QMainWindow):
         self._loaded_json_path: Path | None = None    # JSON loaded via Upload JSON (ready to inject)
         self._inject_worker = None  # InjectionWorker (set when injecting)
         self._inject_thread: QThread | None = None
+        self._update_dialog = None  # centered update-check panel (one at a time)
+        self._update_checked_this_launch = False
+        self._member_thread: QThread | None = None
+        self._member_worker = None
+        self._discord_prompt_shown = False
+        # Discord Rich Presence — start now if the user enabled it previously.
+        from fd6.gui.startup_log import log as _log
+        _log("init: before RichPresence")
+        from fd6.gui import discord_link
+        self._rich_presence = discord_link.RichPresence()
+        if discord_link.rich_presence_enabled():
+            self._rich_presence.start()
+        _log("init: after RichPresence.start")
 
         # Menus / shortcuts
         self._build_menus()
@@ -161,6 +192,132 @@ class MainWindow(QMainWindow):
                 act.setEnabled(False)
             for act in self._music_vol_group.actions():
                 act.setEnabled(False)
+
+    def check_for_updates(self, force: bool = False) -> None:
+        """Show the centered update panel: it checks GitHub, then reports
+        up-to-date / offers to install / says it couldn't check (offline).
+
+        AUTOMATIC launch check (force=False) is GATED: it only runs if the user
+        has linked Discord AND is a member of the FD6 server — that's the
+        opt-in path for receiving auto-updates. The MANUAL Help → Check for
+        updates (force=True) is always available to everyone. Never blocks app
+        use — offline just shows "couldn't check".
+        """
+        from fd6.gui.startup_log import log as _log
+        _log(f"check_for_updates(force={force})")
+        if getattr(self, "_update_dialog", None) is not None:
+            return  # one already open
+        if not force:
+            if self._update_checked_this_launch:
+                return
+            self._update_checked_this_launch = True
+            # Auto-update opt-in gate: must be linked + in the FD6 server.
+            from fd6.gui import discord_link
+            if not discord_link.is_linked():
+                _log("update: not linked, skipping")
+                return
+            _log("update: linked, starting membership check")
+            # Membership check runs on a worker so a slow/offline call can't
+            # stall launch; only opens the panel if confirmed in-server.
+            self._start_auto_update_membership_check()
+            return
+        self._open_update_dialog()
+
+    def _open_update_dialog(self) -> None:
+        from fd6.gui.update_dialog import UpdateDialog
+        if getattr(self, "_update_dialog", None) is not None:
+            return
+        dlg = UpdateDialog(self)
+        self._update_dialog = dlg
+        dlg.quit_requested.connect(self._on_update_quit)
+        dlg.finished.connect(lambda _r: setattr(self, "_update_dialog", None))
+        dlg.show()
+
+    def _start_auto_update_membership_check(self) -> None:
+        """Background-verify FD6-server membership, then open the update panel
+        only if confirmed. Offline/not-a-member → silently skip (app unaffected)."""
+        self._member_thread = QThread(self)
+        self._member_worker = _MembershipWorker()
+        self._member_worker.moveToThread(self._member_thread)
+        self._member_thread.started.connect(self._member_worker.run)
+        # CRITICAL: connect to a BOUND METHOD of self (GUI-thread affinity) so
+        # Qt delivers the result via a QUEUED connection on the GUI thread. A
+        # bare closure here would run in the WORKER thread and then call
+        # thread.wait() on itself → deadlock (the second-launch freeze).
+        self._member_worker.result.connect(self._on_membership_result)
+        self._member_thread.start()
+
+    def _on_membership_result(self, is_member: bool) -> None:
+        """Runs on the GUI thread (queued from the worker). Safe to touch the
+        thread object and open dialogs here."""
+        from fd6.gui.startup_log import log as _log
+        _log(f"membership result on GUI thread ({is_member})")
+        if self._member_thread is not None:
+            self._member_thread.quit()
+            self._member_thread.wait(2000)
+            self._member_thread = None
+            self._member_worker = None
+        if is_member:
+            self._open_update_dialog()
+
+    def _on_update_quit(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance().quit()
+
+    def run_startup_flow(self) -> None:
+        """Deterministic post-splash startup: show the version-keyed welcome
+        panel (first run / new version), else run the gated auto-update check.
+
+        Called explicitly from app.py once the main window is shown — this is
+        more reliable than showEvent in the frozen --windowed build. Idempotent:
+        a second call in the same session is a no-op.
+        """
+        if getattr(self, "_startup_flow_done", False):
+            return
+        self._startup_flow_done = True
+        from fd6.gui.startup_log import log as _log
+        _log("run_startup_flow")
+        from PySide6.QtCore import QSettings
+        s = QSettings("FD6", "Forza Designer 6")
+        welcome_key = f"discord/welcome_shown_{fd6.__version__}"
+        if not s.value(welcome_key):
+            # Slight delay so the window is painted/active before the modal.
+            _log("startup: scheduling welcome")
+            QTimer.singleShot(500, self._show_welcome)
+        elif not self._update_checked_this_launch:
+            _log("startup: scheduling gated update check")
+            QTimer.singleShot(400, self.check_for_updates)
+
+    def _show_welcome(self) -> None:
+        """First-run welcome panel: Link Discord / Check for updates / Skip."""
+        if getattr(self, "_welcome_open", False):
+            return
+        self._welcome_open = True
+        self._discord_prompt_shown = True
+        from PySide6.QtCore import QSettings
+        _s = QSettings("FD6", "Forza Designer 6")
+        _s.setValue(f"discord/welcome_shown_{fd6.__version__}", "1"); _s.sync()
+        from fd6.gui.welcome_dialog import WelcomeDialog
+        dlg = WelcomeDialog(self)
+        dlg.link_discord_requested.connect(lambda: self._open_discord_settings(first_launch=True))
+        dlg.check_updates_requested.connect(lambda: self.check_for_updates(force=True))
+        dlg.exec()
+        self._welcome_open = False
+
+    def _open_discord_settings(self, first_launch: bool = False) -> None:
+        from fd6.gui.discord_dialog import DiscordSettingsDialog
+        dlg = DiscordSettingsDialog(self, first_launch=first_launch)
+        dlg.rich_presence_changed.connect(self._on_rich_presence_toggled)
+        dlg.exec()
+
+    def _on_rich_presence_toggled(self, on: bool) -> None:
+        rp = getattr(self, "_rich_presence", None)
+        if rp is None:
+            return
+        if on:
+            rp.start()
+        else:
+            rp.stop()
 
     def start_music(self) -> None:
         """Begin background music. Call once, after the splash has finished, to
@@ -361,6 +518,12 @@ class MainWindow(QMainWindow):
         fh6_menu.addAction(reload_act)
 
         help_menu = mbar.addMenu("&Help")
+        update_act = QAction("Check for &updates…", self)
+        update_act.triggered.connect(lambda: self.check_for_updates(force=True))
+        help_menu.addAction(update_act)
+        discord_act = QAction("&Discord & auto-updates…", self)
+        discord_act.triggered.connect(self._open_discord_settings)
+        help_menu.addAction(discord_act)
         about_act = QAction("&About FD6…", self)
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
@@ -573,23 +736,28 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Forza Designer 6+",
-            f"<b>Forza Designer 6+</b><br>v0.5.0<br>"
+            f"<b>Forza Designer 6+</b><br>v0.5.1<br>"
             f"<i>For Forza Horizon 3 / 4 / 5 / 6 (FH6 build {FH6_TARGET_BUILD}) "
             f"and Assetto Corsa Competizione</i><br><br>"
             "Multi-game livery suite. Forza titles: live memory injection of "
             "vinyl-group shapes (position, scale, rotation, color). Assetto "
             "Corsa Competizione: file-based PNG livery export to the user's "
             "Documents folder.<br><br>"
-            "<b>What's new in v0.5.0:</b><br>"
-            "• Fixed the generation-queue infinite loop that happened when the "
-            "same image was queued more than once — each entry now runs exactly once.<br>"
-            "• Fixed the window growing too big / its bottom running off-screen "
-            "when a new queued preview started (previewed image + status text no "
-            "longer inflate the window; the side panels now scroll instead of "
-            "forcing a minimum window height taller than the screen).<br>"
-            "• Queue improvements: every finished item gets its own "
-            "<b>Download JSON</b> button so you can save each image's result "
-            "individually (the top button still saves the currently-previewed one).<br><br>"
+            "<b>What's new in v0.5.1:</b><br>"
+            "• Added a built-in updater: it can check GitHub for a newer release "
+            "and, if found, download + install it automatically (then relaunch). "
+            "Offline? It just says it couldn't check and you keep using the app. "
+            "Manual check is always available via Help → Check for updates.<br>"
+            "• Optional <b>Discord linking</b> (Help → Discord &amp; auto-updates): "
+            "link your Discord and be a member of the FD6 server to receive the "
+            "automatic update prompts on launch. Linking is not required — without "
+            "it you simply use the manual update check. No bot or client secret; "
+            "linking only reads your username and which servers you're in.<br>"
+            "• Optional <b>Discord Rich Presence</b> — show \"Using Forza Designer 6\" "
+            "on your Discord while the app is open (toggle in Help → Discord &amp; "
+            "auto-updates).<br>"
+            "• Refreshed the in-app banner links (new YouTube tutorial, "
+            "NoMansMovies release, Discord).<br><br>"
             "Inspired by forza-painter (the_adawg), built on the techniques of "
             "geometrize-lib (Sam Twidale) and Primitive (Michael Fogleman). "
             "LiveryGroup discovery approach adapted from bvzrays/forza-painter-fh6.<br><br>"
@@ -999,6 +1167,10 @@ class MainWindow(QMainWindow):
             # One event-loop tick of delay so the window has fully painted
             # before the modal blocks it — avoids a black-frame flash.
             QTimer.singleShot(0, self._prompt_suite_on_first_launch)
+        # NOTE: the welcome panel + update check are triggered DETERMINISTICALLY
+        # from app.py's post-splash callback via run_startup_flow(), not here —
+        # showEvent timing proved unreliable in the frozen --windowed build
+        # (a swallowed exception/timing race left the panel never showing).
         if hasattr(self, "particles") and self.particles is not None:
             self.particles.reposition()
             self._sync_particle_exclude_rect()
@@ -1026,6 +1198,12 @@ class MainWindow(QMainWindow):
             self.particles.set_exclude_rect(excl)
 
     def closeEvent(self, event) -> None:
+        # Tear down Discord Rich Presence so it doesn't linger after exit.
+        try:
+            if getattr(self, "_rich_presence", None) is not None:
+                self._rich_presence.stop()
+        except Exception:
+            pass
         if self._worker:
             self._worker.stop()
             if self._thread:
