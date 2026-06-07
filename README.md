@@ -35,23 +35,28 @@ Source build: Python 3.10+, `pip install -r requirements.txt`. Microsoft Visual 
 
 ## Updates & Discord
 
-### Automatic updates
-FD6 can update itself. The auto-update prompt on launch is **opt-in via Discord**:
+### In-app updates (Discord members only)
+FD6 can update itself, but **in-app updates require being a member of the FD6
+Discord server**. This keeps the community together — everyone who updates
+through the app is in the Discord.
 
 1. On first launch (and after each new version) a **Welcome** panel offers
    **Link Discord**, **Check for updates**, or **Skip**.
-2. **Link your Discord** (optional, PKCE OAuth — no bot, no password, no client
-   secret; it only reads your username and which servers you're in) and join the
+2. **Link your Discord** (PKCE OAuth — no bot, no password, no client secret; it
+   only reads your username and which servers you're in) and join the
    [FD6 Discord server](https://discord.gg/PJFWdykGmS).
-3. If you're linked **and** a member of the FD6 server, FD6 checks GitHub on
-   launch and — when a newer release exists — shows
-   *"Update X available — install now?"*. Accepting downloads the new build,
-   swaps it in, and relaunches automatically.
+3. Once you're linked **and** a member of the server, FD6 checks GitHub on launch
+   and — when a newer release exists — shows *"Update X available — install
+   now?"*. Accepting downloads the new build, swaps it in, and relaunches
+   automatically. **Help → Check for updates** does the same on demand.
 
-**Not linking is fine** — the app works fully without it. You just won't get the
-automatic prompt; you can always update from **Help → Check for updates** (that
-manual check is available to everyone, no Discord required). If you're offline
-the check simply reports it couldn't reach GitHub and the app keeps running.
+**Not in the Discord? You update manually.** Both the automatic launch check and
+the manual *Help → Check for updates* are gated behind Discord link + server
+membership. If you're not linked / not a member, FD6 points you to the
+[GitHub releases page](https://github.com/tokyubevoxelverse/ForzaDesigner6/releases)
+to download the latest version yourself. The rest of the app works fully either
+way. (If you're offline, the check simply reports it couldn't reach Discord/GitHub
+and the app keeps running.)
 
 You can link / unlink any time from **Help → Discord & auto-updates**.
 

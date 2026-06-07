@@ -194,34 +194,65 @@ class MainWindow(QMainWindow):
                 act.setEnabled(False)
 
     def check_for_updates(self, force: bool = False) -> None:
-        """Show the centered update panel: it checks GitHub, then reports
-        up-to-date / offers to install / says it couldn't check (offline).
+        """Discord-gated in-app updates.
 
-        AUTOMATIC launch check (force=False) is GATED: it only runs if the user
-        has linked Discord AND is a member of the FD6 server — that's the
-        opt-in path for receiving auto-updates. The MANUAL Help → Check for
-        updates (force=True) is always available to everyone. Never blocks app
-        use — offline just shows "couldn't check".
+        The in-app updater (both the automatic launch check AND the manual
+        Help -> Check for updates) is GATED behind linking Discord AND being a
+        member of the FD6 server. Users who don't link must update manually from
+        the GitHub releases page — this keeps the community in the Discord.
+
+        `force=True` is the MANUAL path: it explains the gate / offers to link /
+        points to GitHub when the user isn't eligible. `force=False` is the
+        silent AUTOMATIC launch path: it just does nothing when not eligible.
         """
         from fd6.gui.startup_log import log as _log
         _log(f"check_for_updates(force={force})")
         if getattr(self, "_update_dialog", None) is not None:
             return  # one already open
+
+        from fd6.gui import discord_link
         if not force:
             if self._update_checked_this_launch:
                 return
             self._update_checked_this_launch = True
-            # Auto-update opt-in gate: must be linked + in the FD6 server.
-            from fd6.gui import discord_link
-            if not discord_link.is_linked():
-                _log("update: not linked, skipping")
-                return
-            _log("update: linked, starting membership check")
-            # Membership check runs on a worker so a slow/offline call can't
-            # stall launch; only opens the panel if confirmed in-server.
-            self._start_auto_update_membership_check()
+
+        # GATE 1 — must be linked.
+        if not discord_link.is_linked():
+            _log("update: not linked")
+            if force:
+                self._prompt_link_required_for_updates()
             return
-        self._open_update_dialog()
+
+        # GATE 2 — must be a member of the FD6 server (verified off-thread so a
+        # slow/offline call never stalls the GUI). The result handler opens the
+        # update panel only if confirmed; on the manual path it explains misses.
+        _log("update: linked, starting membership check")
+        self._start_auto_update_membership_check(manual=force)
+
+    def _prompt_link_required_for_updates(self) -> None:
+        """Manual update check while NOT linked: explain the gate, offer to link,
+        or send them to GitHub for a manual download."""
+        from fd6.gui import discord_link
+        box = QMessageBox(self)
+        box.setWindowTitle("Updates require Discord")
+        box.setIcon(QMessageBox.Information)
+        box.setText(
+            "In-app updates are available to members of the FD6 Discord server.\n\n"
+            "Link your Discord and join the server to enable automatic in-app "
+            "updates — or download the latest version manually from GitHub."
+        )
+        link_btn = box.addButton("Link Discord", QMessageBox.AcceptRole)
+        gh_btn = box.addButton("Open GitHub releases", QMessageBox.ActionRole)
+        box.addButton("Close", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is link_btn:
+            self._open_discord_settings()
+        elif clicked is gh_btn:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            from fd6.gui import updater
+            QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE))
 
     def _open_update_dialog(self) -> None:
         from fd6.gui.update_dialog import UpdateDialog
@@ -233,9 +264,21 @@ class MainWindow(QMainWindow):
         dlg.finished.connect(lambda _r: setattr(self, "_update_dialog", None))
         dlg.show()
 
-    def _start_auto_update_membership_check(self) -> None:
+    def _open_update_dialog(self) -> None:
+        from fd6.gui.update_dialog import UpdateDialog
+        if getattr(self, "_update_dialog", None) is not None:
+            return
+        dlg = UpdateDialog(self)
+        self._update_dialog = dlg
+        dlg.quit_requested.connect(self._on_update_quit)
+        dlg.finished.connect(lambda _r: setattr(self, "_update_dialog", None))
+        dlg.show()
+
+    def _start_auto_update_membership_check(self, manual: bool = False) -> None:
         """Background-verify FD6-server membership, then open the update panel
-        only if confirmed. Offline/not-a-member → silently skip (app unaffected)."""
+        only if confirmed. On the MANUAL path, a non-member / offline result is
+        explained to the user; on the automatic path it's silent."""
+        self._member_check_manual = manual
         self._member_thread = QThread(self)
         self._member_worker = _MembershipWorker()
         self._member_worker.moveToThread(self._member_thread)
@@ -257,8 +300,32 @@ class MainWindow(QMainWindow):
             self._member_thread.wait(2000)
             self._member_thread = None
             self._member_worker = None
+        manual = getattr(self, "_member_check_manual", False)
         if is_member:
             self._open_update_dialog()
+        elif manual:
+            # Linked but not in the server (or couldn't verify) — explain + offer
+            # to join / go to GitHub. Silent on the automatic path.
+            from fd6.gui import discord_link, updater
+            box = QMessageBox(self)
+            box.setWindowTitle("Join the FD6 server for updates")
+            box.setIcon(QMessageBox.Information)
+            box.setText(
+                "In-app updates are for members of the FD6 Discord server.\n\n"
+                "You're linked, but you don't appear to be in the server (or we "
+                "couldn't reach Discord). Join the server to enable in-app "
+                "updates — or download the latest version manually from GitHub."
+            )
+            join_btn = box.addButton("Join FD6 Discord", QMessageBox.AcceptRole)
+            gh_btn = box.addButton("Open GitHub releases", QMessageBox.ActionRole)
+            box.addButton("Close", QMessageBox.RejectRole)
+            box.exec()
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            if box.clickedButton() is join_btn:
+                QDesktopServices.openUrl(QUrl(discord_link.DISCORD_INVITE_URL))
+            elif box.clickedButton() is gh_btn:
+                QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE))
 
     def _on_update_quit(self) -> None:
         from PySide6.QtWidgets import QApplication
@@ -744,15 +811,14 @@ class MainWindow(QMainWindow):
             "Corsa Competizione: file-based PNG livery export to the user's "
             "Documents folder.<br><br>"
             "<b>What's new in v0.5.1:</b><br>"
-            "• Added a built-in updater: it can check GitHub for a newer release "
-            "and, if found, download + install it automatically (then relaunch). "
-            "Offline? It just says it couldn't check and you keep using the app. "
-            "Manual check is always available via Help → Check for updates.<br>"
-            "• Optional <b>Discord linking</b> (Help → Discord &amp; auto-updates): "
-            "link your Discord and be a member of the FD6 server to receive the "
-            "automatic update prompts on launch. Linking is not required — without "
-            "it you simply use the manual update check. No bot or client secret; "
-            "linking only reads your username and which servers you're in.<br>"
+            "• Added a built-in updater that downloads + installs new releases and "
+            "relaunches — for <b>FD6 Discord members</b>. Both the automatic "
+            "launch check and Help → Check for updates require linking Discord "
+            "<b>and</b> being in the FD6 server. Not a member? FD6 points you to "
+            "the GitHub releases page to update manually. (PKCE link — no bot or "
+            "client secret; it only reads your username and which servers you're "
+            "in.)<br>"
+            "• Link / unlink Discord from Help → Discord &amp; auto-updates.<br>"
             "• Optional <b>Discord Rich Presence</b> — show \"Using Forza Designer 6\" "
             "on your Discord while the app is open (toggle in Help → Discord &amp; "
             "auto-updates).<br>"
