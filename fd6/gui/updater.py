@@ -33,7 +33,12 @@ import fd6
 # GitHub repo that publishes FD6 releases.
 GITHUB_OWNER = "tokyubevoxelverse"
 GITHUB_REPO = "ForzaDesigner6"
-RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+# Use the full releases LIST (not /releases/latest). /latest is eventually
+# consistent and can return a stale release for a minute or two right after you
+# publish — which is why "Check for updates" sometimes said "up to date" when a
+# newer build was already live. The list lets us pick the highest version
+# ourselves, and we cache-bust the request so no proxy hands us a stale copy.
+RELEASES_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=30"
 RELEASES_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
 
 
@@ -83,32 +88,62 @@ class UpdateChecker(QObject):
         try:
             req = urllib.request.Request(
                 RELEASES_API,
-                headers={"Accept": "application/vnd.github+json", "User-Agent": "FD6-Updater"},
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "FD6-Updater",
+                    # Defeat any intermediary/proxy caching so we always see the
+                    # newest published release immediately.
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                },
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.load(resp)
         except Exception as exc:
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
-        tag = str(data.get("tag_name") or data.get("name") or "")
+
+        # /releases returns a list; normalize so a single-object response (or an
+        # unexpected shape) still works.
+        releases = data if isinstance(data, list) else [data]
         current = fd6.__version__
+
+        # Pick the genuinely highest-version, non-draft, non-prerelease release —
+        # don't trust list order or /latest's eventual consistency.
+        best = None
+        best_ver: tuple[int, ...] = ()
+        for rel in releases:
+            if not isinstance(rel, dict):
+                continue
+            if rel.get("draft") or rel.get("prerelease"):
+                continue
+            tag = str(rel.get("tag_name") or rel.get("name") or "")
+            ver = _parse_version(tag)
+            if ver and ver > best_ver:
+                best_ver, best = ver, rel
+
+        if best is None:
+            self.no_update.emit()
+            return
+
+        tag = str(best.get("tag_name") or best.get("name") or "")
         if not _is_newer(tag, current):
             self.no_update.emit()
             return
-        # Find the first .exe asset to download.
+
         asset_url = asset_name = None
-        for a in data.get("assets", []) or []:
+        for a in best.get("assets", []) or []:
             name = str(a.get("name", ""))
             if name.lower().endswith(".exe"):
                 asset_url = a.get("browser_download_url")
                 asset_name = name
                 break
         info = UpdateInfo(
-            version=".".join(str(p) for p in _parse_version(tag)) or tag,
+            version=".".join(str(p) for p in best_ver) or tag,
             tag=tag,
             asset_url=asset_url,
             asset_name=asset_name,
-            notes=str(data.get("body") or "").strip(),
+            notes=str(best.get("body") or "").strip(),
         )
         self.update_available.emit(info)
 
@@ -148,7 +183,18 @@ def download_and_apply(info: UpdateInfo, progress_cb=None) -> None:
                 if progress_cb and total:
                     progress_cb(read, total)
 
-    # Swap script: wait for the old process to release the exe, replace it, relaunch.
+    # Swap script: wait for the old process to release the exe, replace it,
+    # verify the move succeeded, then relaunch.
+    #
+    # CRITICAL (the "Failed to load Python DLL ..._MEI######\python314.dll"
+    # crash after auto-update): a PyInstaller one-file exe exports _MEIPASS2
+    # pointing at its private temp extraction dir. If the relaunched child
+    # inherits that variable, it tries to reuse the PARENT's extraction folder
+    # instead of unpacking its own — but the parent deletes that folder as it
+    # exits, so the child can't find python3xx.dll and dies. The .bat clears
+    # _MEIPASS2 (and the related _PYI_* vars) before `start`, so the new exe
+    # bootstraps cleanly. Manual launch worked precisely because it had no
+    # inherited var.
     bat = tmp_dir / "fd6_update.bat"
     bat.write_text(
         "@echo off\r\n"
@@ -157,13 +203,32 @@ def download_and_apply(info: UpdateInfo, progress_cb=None) -> None:
         "timeout /t 1 /nobreak >nul\r\n"
         f'tasklist /fi "PID eq {os.getpid()}" 2>nul | find "{os.getpid()}" >nul\r\n'
         "if not errorlevel 1 goto wait\r\n"
+        "rem one more beat so Windows fully releases the exe file lock\r\n"
+        "timeout /t 1 /nobreak >nul\r\n"
         f'move /y "{new_exe}" "{exe}" >nul\r\n'
+        f'if not exist "{exe}" goto fail\r\n'
+        "set _MEIPASS2=\r\n"
+        "set _PYI_APPLICATION_HOME_DIR=\r\n"
+        "set _PYI_ARCHIVE_FILE=\r\n"
+        "set _PYI_PARENT_PROCESS_LEVEL=\r\n"
         f'start "" "{exe}"\r\n'
+        'del "%~f0"\r\n'
+        "exit\r\n"
+        ":fail\r\n"
+        "echo Update failed to replace the program file.\r\n"
+        "pause\r\n"
         'del "%~f0"\r\n',
         encoding="ascii",
     )
+    # Launch the swap script with a CLEAN copy of the environment that has the
+    # PyInstaller bootstrap vars stripped, so even the cmd-inherited values can't
+    # leak into the relaunched exe.
+    child_env = {k: v for k, v in os.environ.items()
+                 if k not in ("_MEIPASS2", "_PYI_APPLICATION_HOME_DIR",
+                              "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL")}
     subprocess.Popen(
         ["cmd", "/c", str(bat)],
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         close_fds=True,
+        env=child_env,
     )

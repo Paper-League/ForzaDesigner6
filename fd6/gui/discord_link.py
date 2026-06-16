@@ -292,13 +292,15 @@ class RichPresence:
         try:
             from pypresence import Presence
             import time
+            import fd6
+            ver = f"v{fd6.__version__}"
             rpc = Presence(DISCORD_CLIENT_ID)
             rpc.connect()
             rpc.update(
-                state="Designing liveries",
+                state=f"Designing liveries · {ver}",
                 details="Using Forza Designer 6",
                 large_image=RP_LARGE_IMAGE,
-                large_text="Forza Designer 6",
+                large_text=f"Forza Designer 6 {ver}",
                 start=int(time.time()),
             )
         except Exception:
@@ -315,10 +317,10 @@ class RichPresence:
             while not self._stop_evt.wait(15):
                 try:
                     rpc.update(
-                        state="Designing liveries",
+                        state=f"Designing liveries · {ver}",
                         details="Using Forza Designer 6",
                         large_image=RP_LARGE_IMAGE,
-                        large_text="Forza Designer 6",
+                        large_text=f"Forza Designer 6 {ver}",
                     )
                 except Exception:
                     break

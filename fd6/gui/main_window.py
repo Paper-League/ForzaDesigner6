@@ -345,11 +345,14 @@ class MainWindow(QMainWindow):
         from fd6.gui.startup_log import log as _log
         _log("run_startup_flow")
         from PySide6.QtCore import QSettings
+        from fd6.gui import discord_link
         s = QSettings("FD6", "Forza Designer 6")
         welcome_key = f"discord/welcome_shown_{fd6.__version__}"
-        if not s.value(welcome_key):
-            # Slight delay so the window is painted/active before the modal.
-            _log("startup: scheduling welcome")
+        # Only show the welcome / "link Discord" panel to users who HAVEN'T linked
+        # yet (once per version). Already-linked users shouldn't be nagged to link
+        # on every new version — go straight to the gated auto-update check.
+        if not discord_link.is_linked() and not s.value(welcome_key):
+            _log("startup: scheduling welcome (unlinked)")
             QTimer.singleShot(500, self._show_welcome)
         elif not self._update_checked_this_launch:
             _log("startup: scheduling gated update check")
@@ -803,27 +806,29 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Forza Designer 6+",
-            f"<b>Forza Designer 6+</b><br>v0.5.1<br>"
+            f"<b>Forza Designer 6+</b><br>v0.5.3<br>"
             f"<i>For Forza Horizon 3 / 4 / 5 / 6 (FH6 build {FH6_TARGET_BUILD}) "
             f"and Assetto Corsa Competizione</i><br><br>"
             "Multi-game livery suite. Forza titles: live memory injection of "
             "vinyl-group shapes (position, scale, rotation, color). Assetto "
             "Corsa Competizione: file-based PNG livery export to the user's "
             "Documents folder.<br><br>"
-            "<b>What's new in v0.5.1:</b><br>"
-            "• Added a built-in updater that downloads + installs new releases and "
-            "relaunches — for <b>FD6 Discord members</b>. Both the automatic "
-            "launch check and Help → Check for updates require linking Discord "
-            "<b>and</b> being in the FD6 server. Not a member? FD6 points you to "
-            "the GitHub releases page to update manually. (PKCE link — no bot or "
-            "client secret; it only reads your username and which servers you're "
-            "in.)<br>"
-            "• Link / unlink Discord from Help → Discord &amp; auto-updates.<br>"
-            "• Optional <b>Discord Rich Presence</b> — show \"Using Forza Designer 6\" "
-            "on your Discord while the app is open (toggle in Help → Discord &amp; "
-            "auto-updates).<br>"
-            "• Refreshed the in-app banner links (new YouTube tutorial, "
-            "NoMansMovies release, Discord).<br><br>"
+            "<b>What's new in v0.5.3:</b><br>"
+            "• Fixed the auto-update crash (\"Failed to load Python DLL … "
+            "python3xx.dll\") after an update installed — the relaunched app was "
+            "inheriting the old build's temp folder; it now starts cleanly and "
+            "<b>auto-launches itself</b> after updating.<br>"
+            "• Fixed the update check sometimes saying \"up to date\" when it "
+            "wasn't (a race with GitHub's latest-release cache): it now reads the "
+            "full release list, always picks the highest version, and cache-busts "
+            "the request.<br>"
+            "• Discord Rich Presence now shows the FD6 version number.<br>"
+            "• Already-linked users are no longer asked to link Discord again on "
+            "each new version.<br><br>"
+            "<b>v0.5.2:</b> fixed injecting small vinyls (under ~250 shapes); "
+            "added the Experimental 2048px generation cap toggle.<br>"
+            "<b>v0.5.1:</b> built-in updater for FD6 Discord members; optional "
+            "Discord Rich Presence; refreshed banner links.<br><br>"
             "Inspired by forza-painter (the_adawg), built on the techniques of "
             "geometrize-lib (Sam Twidale) and Primitive (Michael Fogleman). "
             "LiveryGroup discovery approach adapted from bvzrays/forza-painter-fh6.<br><br>"

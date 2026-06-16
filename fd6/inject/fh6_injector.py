@@ -450,17 +450,30 @@ def locate_livery_group(
             if pos < 0:
                 break
             start = pos + 1
-            candidates += 1
-            if candidates > max_candidates:
-                if progress_cb: progress_cb(i + 1, total, candidates)
-                return _pick_best_perfect(proc, perfect, layer_count)
             count_addr = r.base + pos
             group_addr = count_addr - COUNT_OFF
             if group_addr < r.base:
                 continue
-            table_addr = _read_u64(proc, group_addr + TABLE_OFF)
+            # CHEAP PRE-FILTER (no syscall): a small layer count like 50/100/200
+            # is an extremely common 2-byte pattern, so naive scanning did a
+            # ReadProcessMemory per match and blew past the candidate cap before
+            # ever reaching the real template — which is exactly why injecting
+            # JSONs under ~250 shapes failed. The LiveryGroup's table pointer
+            # lives at group_addr + TABLE_OFF, almost always inside THIS region's
+            # already-read buffer, so read+validate it straight from `data` and
+            # discard the byte-noise before spending a syscall or a candidate slot.
+            tbl_off = pos - COUNT_OFF + TABLE_OFF
+            if 0 <= tbl_off and tbl_off + 8 <= len(data):
+                table_addr = struct.unpack_from('<Q', data, tbl_off)[0]
+            else:
+                table_addr = _read_u64(proc, group_addr + TABLE_OFF)
             if not _is_user_ptr(table_addr):
                 continue
+            # Only PLAUSIBLE candidates (valid table pointer) count toward the cap.
+            candidates += 1
+            if candidates > max_candidates:
+                if progress_cb: progress_cb(i + 1, total, candidates)
+                return _pick_best_perfect(proc, perfect, layer_count)
             # STRICT: require ALL 16 sampled layers to score 5/5.
             ok = True
             sample_n = min(layer_count, 16)

@@ -171,6 +171,22 @@ class SettingsPanel(QWidget):
             "stay empty (the rest of the Forza vinyl group shows through)."
         )
         sg_layout.addWidget(self.sticker_mode_cb)
+
+        # Experimental: cap generation resolution at 2048px. Users report better
+        # quality at/under 2048, so this hard-limits Max resolution to 2048 no
+        # matter what the profile (even extreme_quality) or the spinbox asks for.
+        # When OFF, Max resolution works at whatever the user sets.
+        self.cap_2048_cb = QCheckBox("Experimental: cap generation at 2048px", sticker_group)
+        self.cap_2048_cb.setChecked(False)
+        self.cap_2048_cb.setToolTip(
+            "EXPERIMENTAL. When ON, generation resolution is hard-capped at "
+            "2048 px on the longer side — even if a profile (e.g. extreme_quality) "
+            "or the Max resolution box requests more. Many users report better, "
+            "cleaner results at or below 2048 px. Turn OFF to let Max resolution "
+            "go as high as you set it."
+        )
+        self.cap_2048_cb.toggled.connect(self._on_adv_changed)
+        sg_layout.addWidget(self.cap_2048_cb)
         layout.addWidget(sticker_group)
 
         # Shape types. Only rotated_ellipse is confirmed-working for the current
@@ -357,10 +373,18 @@ class SettingsPanel(QWidget):
         base.random_samples = self.random_samples.value()
         base.mutated_samples = self.mutated_samples.value()
         base.max_resolution = self.max_resolution.value()
+        # Experimental hard cap: never exceed 2048 px when the toggle is on,
+        # regardless of the profile (incl. extreme_quality) or the spinbox value.
+        if self.cap_2048_cb.isChecked():
+            base.max_resolution = min(base.max_resolution, 2048)
         base.max_threads = self.max_threads.value()
         base.preview_every = self.preview_every.value()
         base.shape_types = [code for code, cb in self._shape_checks.items() if cb.isChecked()] or ["rotated_ellipse"]
         base.compute_backend = str(self.compute_backend.currentData() or "auto")
+        # Experimental hard cap: clamp resolution to 2048 px regardless of the
+        # profile/spinbox (extreme_quality included) when the toggle is on.
+        if self.cap_2048_cb.isChecked():
+            base.max_resolution = min(base.max_resolution, 2048)
         return base
 
     def set_running(self, running: bool) -> None:
